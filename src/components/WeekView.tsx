@@ -397,6 +397,13 @@ export function WeekView() {
   const [optimisticCreatedShifts, setOptimisticCreatedShifts] = useState<OptimisticCreatedShift[]>([]);
   const [optimisticDeletedShiftIds, setOptimisticDeletedShiftIds] = useState<string[]>([]);
   const [pendingMoveShiftIds, setPendingMoveShiftIds] = useState<string[]>([]);
+  const [dragOrigin, setDragOrigin] = useState<{
+    shiftId: string;
+    employeeId: string;
+    date: string;
+    startHour: number;
+    endHour: number;
+  } | null>(null);
   const dragStartRef = useRef<{ startX: number; startY: number; originUserId: string } | null>(null);
   const contextMenuRef = useRef<HTMLDivElement | null>(null);
 
@@ -611,7 +618,7 @@ export function WeekView() {
         savedClipboard,
       });
     }
-    showToast(`Copied shift ${sourceShift.id}`, 'success');
+    showToast('Shift copied', 'success');
   }, [activeRestaurantId, canUseCopyPaste, displayShifts, selectedShiftId, showToast, updateSessionClipboard]);
 
   const handlePasteShiftFromClipboard = useCallback(async (targetCellId?: string | null) => {
@@ -840,9 +847,20 @@ export function WeekView() {
     if (!dragTarget) return;
     setDraggingShiftId(dragTarget.shiftId);
     if (process.env.NODE_ENV !== 'production') {
-      showToast(`Drag start: ${dragTarget.shiftId}`, 'success');
+      showToast('Drag start', 'success');
     }
     const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId);
+    if (sourceShift) {
+      setDragOrigin({
+        shiftId: sourceShift.id,
+        employeeId: sourceShift.employeeId,
+        date: sourceShift.date,
+        startHour: sourceShift.startHour,
+        endHour: sourceShift.endHour,
+      });
+    } else {
+      setDragOrigin(null);
+    }
     const point = getClientPointFromEvent(event.activatorEvent);
     dragStartRef.current = {
       startX: point?.x ?? 0,
@@ -863,6 +881,7 @@ export function WeekView() {
   const clearDragIndicators = useCallback(() => {
     setDraggingShiftId(null);
     setDragOverCellId(null);
+    setDragOrigin(null);
     dragStartRef.current = null;
   }, []);
 
@@ -1512,6 +1531,12 @@ export function WeekView() {
                             onMouseDown={(e) => handleCellMouseDown(employee.id, dateStr, e)}
                             onMouseUp={(e) => handleCellMouseUp(employee.id, dateStr, e)}
                           >
+                            {dragOrigin
+                              && draggingShiftId === dragOrigin.shiftId
+                              && dragOrigin.employeeId === employee.id
+                              && dragOrigin.date === dateStr && (
+                                <div className="absolute inset-1 rounded border border-sky-300/35 bg-sky-400/10 pointer-events-none" />
+                              )}
                             {!hasTimeOff && !hasBlocked && !hasOrgBlackout && canEditDate(dateStr) && (
                               <div
                                 className={`absolute inset-0 flex items-center justify-center pointer-events-none transition-opacity ${

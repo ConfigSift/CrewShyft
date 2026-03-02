@@ -355,6 +355,13 @@ export function Timeline() {
   const [confirmDeleteLoading, setConfirmDeleteLoading] = useState(false);
   const [draggingShiftId, setDraggingShiftId] = useState<string | null>(null);
   const [dragOverCellId, setDragOverCellId] = useState<string | null>(null);
+  const [dragOrigin, setDragOrigin] = useState<{
+    shiftId: string;
+    employeeId: string;
+    date: string;
+    startHour: number;
+    endHour: number;
+  } | null>(null);
   const [dayMoveTimeTooltip, setDayMoveTimeTooltip] = useState<{
     left: number;
     top: number;
@@ -381,6 +388,7 @@ export function Timeline() {
   const hoverRafRef = useRef<number | null>(null);
   const hoverPendingRef = useRef<{ employeeId: string; clientX: number; target: EventTarget | null } | null>(null);
   const lastPointerTypeRef = useRef<'mouse' | 'pen' | 'touch' | null>(null);
+  const continuousCellAssertedRef = useRef(false);
   const pointerCaptureElRef = useRef<HTMLElement | null>(null);
   const activeDragRef = useRef<{
     pointerId: number;
@@ -568,7 +576,7 @@ export function Timeline() {
   const hasUsableClipboard = Boolean(
     scheduleClipboard && Date.now() - scheduleClipboard.copiedAt <= CLIPBOARD_MAX_AGE_MS
   );
-  const dayReassignEnabled = isManager && !continuousDays;
+  const dayReassignEnabled = isManager;
   const scopedShiftIdSet = useMemo(
     () => new Set(scopedShifts.map((shift) => shift.id)),
     [scopedShifts]
@@ -663,7 +671,7 @@ export function Timeline() {
       }
       console.debug('[timeline-copy] clipboard-saved', { shiftId, clipboard, savedClipboard });
     }
-    showToast(`Copied shift ${sourceShift.id}`, 'success');
+    showToast('Shift copied', 'success');
   }, [activeRestaurantId, canUseCopyPaste, optimisticDeletedShiftIdSet, scopedShifts, showToast, updateSessionClipboard]);
 
   const handlePasteShiftFromClipboard = useCallback(async (targetCellId?: string | null) => {
@@ -842,6 +850,7 @@ export function Timeline() {
   const clearDayReassignState = useCallback(() => {
     setDraggingShiftId(null);
     setDragOverCellId(null);
+    setDragOrigin(null);
     setDayMoveTimeTooltip(null);
     dragStartRef.current = null;
   }, []);
@@ -852,9 +861,20 @@ export function Timeline() {
     if (!dragTarget) return;
     setDraggingShiftId(dragTarget.shiftId);
     if (process.env.NODE_ENV !== 'production') {
-      showToast(`Drag start: ${dragTarget.shiftId}`, 'success');
+      showToast('Drag start', 'success');
     }
     const sourceShift = scopedShifts.find((shift) => shift.id === dragTarget.shiftId && !shift.isBlocked);
+    if (sourceShift) {
+      setDragOrigin({
+        shiftId: sourceShift.id,
+        employeeId: sourceShift.employeeId,
+        date: sourceShift.date,
+        startHour: sourceShift.startHour,
+        endHour: sourceShift.endHour,
+      });
+    } else {
+      setDragOrigin(null);
+    }
     const point = getClientPointFromEvent(event.activatorEvent);
     dragStartRef.current = {
       startX: point?.x ?? 0,
@@ -1917,8 +1937,8 @@ export function Timeline() {
     const rootEl = (handleEl ?? bodyEl ?? target)?.closest('[data-shift-root="true"]') as HTMLElement | null;
 
     if ((handleEl || bodyEl || rootEl) && isManager) {
-      if (!continuousDays && !handleEl) {
-        // In day mode, shift-body drag is handled by dnd-kit for cross-employee reassignment.
+      if (!handleEl) {
+        // Shift-body move is handled by dnd-kit in both day and continuous modes.
         return;
       }
       const shiftIdRaw = rootEl?.getAttribute('data-shift-id');
@@ -2364,6 +2384,27 @@ export function Timeline() {
   }, [closeContextMenu, openCellContextMenu, openShiftContextMenu]);
 
   useEffect(() => {
+    if (process.env.NODE_ENV === 'production') return;
+    if (!continuousDays) {
+      continuousCellAssertedRef.current = false;
+      return;
+    }
+    if (continuousCellAssertedRef.current) return;
+    const root = gridScrollRef.current;
+    if (!root) return;
+    const cellCount = root.querySelectorAll('[data-cell-id]').length;
+    console.debug('[timeline-week-view] rendered cell targets', {
+      cellCount,
+      employeeRows: groupedRows.length,
+      visibleDays: continuousDaysData.length,
+    });
+    if (cellCount === 0) {
+      throw new Error('[Timeline][WeekView] No droppable [data-cell-id] elements rendered in continuous mode.');
+    }
+    continuousCellAssertedRef.current = true;
+  }, [continuousDays, continuousDaysData.length, groupedRows.length]);
+
+  useEffect(() => {
     if (!contextMenu) return;
 
     const handleDocumentMouseDown = (event: MouseEvent) => {
@@ -2622,6 +2663,16 @@ export function Timeline() {
                         </div>
                       );
                     })()}
+
+                    {dragOrigin
+                      && draggingShiftId === dragOrigin.shiftId
+                      && dragOrigin.employeeId === employee.id
+                      && dragOrigin.date === dateString && (
+                        <div
+                          className="absolute top-1 bottom-1 rounded border border-sky-300/35 bg-sky-400/15 pointer-events-none z-10"
+                          style={getShiftPositionForRange(dragOrigin.startHour, dragOrigin.endHour)}
+                        />
+                      )}
 
                     {/* Shifts */}
                     {!hasTimeOff && !hasBlocked && employeeShifts.map((shift) => {
@@ -3010,21 +3061,38 @@ export function Timeline() {
 
                   {/* INTERACTIVE LAYER */}
                   <div data-row-interactive className="relative z-20 pointer-events-auto h-full">
-                    {continuousDaysData.map((dayData, dayIdx) => (
-                      <TimelineDroppableSlice
-                        key={`bg-${employee.id}-${dayData.dateString}`}
-                        id={buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
-                        employeeId={employee.id}
-                        disabled
-                        isActiveCell={activeCellId === buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
-                        isContextMenuTarget={contextMenuCellHighlightId === buildTimelineCellId(rowOrgId, employee.id, dayData.dateString)}
-                        className="absolute top-0 bottom-0 z-0 pointer-events-auto"
-                        style={{
-                          left: `${dayIdx * 24 * pxPerHour}px`,
-                          width: `${24 * pxPerHour}px`,
-                        }}
-                      />
-                    ))}
+                    {continuousDaysData.map((dayData, dayIdx) => {
+                      const dayCellId = buildTimelineCellId(rowOrgId, employee.id, dayData.dateString);
+                      const dayHasTimeOff = hasApprovedTimeOff(employee.id, dayData.dateString);
+                      const dayHasBlocked = hasBlockedShiftOnDate(employee.id, dayData.dateString);
+                      const dayHasOrgBlackout = hasOrgBlackoutOnDate(dayData.dateString);
+                      const canReceiveDrop =
+                        dayReassignEnabled
+                        && isEditableDate(dayData.dateString)
+                        && !dayHasTimeOff
+                        && !dayHasBlocked
+                        && !dayHasOrgBlackout
+                        && !isPendingRowMove;
+
+                      return (
+                        <TimelineDroppableSlice
+                          key={`bg-${employee.id}-${dayData.dateString}`}
+                          id={dayCellId}
+                          employeeId={employee.id}
+                          disabled={!canReceiveDrop}
+                          isActiveCell={activeCellId === dayCellId}
+                          isContextMenuTarget={contextMenuCellHighlightId === dayCellId}
+                          isDragOverCell={dragOverCellId === dayCellId}
+                          className={`absolute top-0 bottom-0 z-0 pointer-events-auto ${
+                            canReceiveDrop ? 'hover:outline hover:outline-1 hover:outline-sky-300/50' : ''
+                          }`}
+                          style={{
+                            left: `${dayIdx * 24 * pxPerHour}px`,
+                            width: `${24 * pxPerHour}px`,
+                          }}
+                        />
+                      );
+                    })}
                     {/* Hover add ghost */}
                     {isManager && hoveredAddSlot?.employeeId === employee.id && (() => {
                       // Don't show ghost on days with time-off or blocked status
@@ -3052,163 +3120,214 @@ export function Timeline() {
                       );
                     })()}
 
+                    {dragOrigin
+                      && draggingShiftId === dragOrigin.shiftId
+                      && dragOrigin.employeeId === employee.id
+                      && (() => {
+                        const originPos = getShiftPositionContinuous(dragOrigin.date, dragOrigin.startHour, dragOrigin.endHour);
+                        if (!originPos) return null;
+                        return (
+                          <div
+                            className="absolute top-1 bottom-1 rounded border border-sky-300/35 bg-sky-400/15 pointer-events-none z-10"
+                            style={{ left: `${originPos.leftPx}px`, width: `${originPos.widthPx}px` }}
+                          />
+                        );
+                      })()}
+
                     {/* Shifts */}
                     {employeeShifts.map((shift) => {
-                    const override = commitOverridesRef.current[String(shift.id)];
-                    const preview = dragPreview[String(shift.id)];
-                    const startHour = preview?.startHour ?? (override ? override.startHour : shift.startHour);
-                    const endHour = preview?.endHour ?? (override ? override.endHour : shift.endHour);
-                    const shiftDate = preview?.date ?? override?.startDate ?? shift.date;
-                    const pos = getShiftPositionContinuous(shiftDate, startHour, endHour);
-                    if (!pos) return null;
-                    // Don't render shifts on days with time-off or blocked status
-                    const shiftDayHasTimeOff = hasApprovedTimeOff(employee.id, shiftDate);
-                    const shiftDayHasBlocked = hasBlockedShiftOnDate(employee.id, shiftDate);
-                    if (shiftDayHasTimeOff || shiftDayHasBlocked) return null;
+                      const override = commitOverridesRef.current[String(shift.id)];
+                      const preview = dragPreview[String(shift.id)];
+                      const startHour = preview?.startHour ?? (override ? override.startHour : shift.startHour);
+                      const endHour = preview?.endHour ?? (override ? override.endHour : shift.endHour);
+                      const shiftDate = preview?.date ?? override?.startDate ?? shift.date;
+                      const pos = getShiftPositionContinuous(shiftDate, startHour, endHour);
+                      if (!pos) return null;
+                      const shiftDayHasTimeOff = hasApprovedTimeOff(employee.id, shiftDate);
+                      const shiftDayHasBlocked = hasBlockedShiftOnDate(employee.id, shiftDate);
+                      if (shiftDayHasTimeOff || shiftDayHasBlocked) return null;
 
-                    const isHovered = hoveredShiftId === shift.id;
-                    const isDraggingShift = activeDragShiftId === String(shift.id);
-                    const isStartDrag = isDraggingShift && activeDragMode === 'resize-left';
-                    const isEndDrag = isDraggingShift && activeDragMode === 'resize-right';
-                    const isSelectedShift = selectedShiftId === shift.id;
-                    const isContextMenuTarget = contextMenuShiftHighlightId === shift.id;
-                    const jobColor = getJobColorClasses(shift.job);
-                    const shiftDuration = endHour - startHour;
-                    const showTimeText = pos.widthPx > 60;
-                    const showJobText = pos.widthPx > 80;
-                    const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
-                    const isDraftShift = isManager && shift.scheduleState === 'draft';
-                    const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
+                      const isHovered = hoveredShiftId === shift.id;
+                      const isDraggingShift = activeDragShiftId === String(shift.id);
+                      const isStartDrag = isDraggingShift && activeDragMode === 'resize-left';
+                      const isEndDrag = isDraggingShift && activeDragMode === 'resize-right';
+                      const isSelectedShift = selectedShiftId === shift.id;
+                      const isContextMenuTarget = contextMenuShiftHighlightId === shift.id;
+                      const jobColor = getJobColorClasses(shift.job);
+                      const shiftDuration = endHour - startHour;
+                      const showTimeText = pos.widthPx > 60;
+                      const showJobText = pos.widthPx > 80;
+                      const shiftNotes = typeof shift.notes === 'string' ? shift.notes.trim() : '';
+                      const isDraftShift = isManager && shift.scheduleState === 'draft';
+                      const isBaselinePublished = isDraftMode && shift.scheduleState !== 'draft';
+                      const isResizeActive = isDraggingShift && (activeDragMode === 'resize-left' || activeDragMode === 'resize-right');
+                      const dragEnabled = dayReassignEnabled && !isPendingRowMove && isEditableDate(shiftDate) && !isResizeActive;
+                      const dragDisabledReason = !dayReassignEnabled
+                        ? 'day-reassign-disabled'
+                        : isPendingRowMove
+                        ? 'pending-row-move'
+                        : !isEditableDate(shiftDate)
+                        ? 'date-locked'
+                        : isResizeActive
+                        ? 'active-resize'
+                        : undefined;
 
-                    return (
-                      <div
-                        key={shift.id}
-                        data-shift="true"
-                        data-shift-root="true"
-                        data-shift-id={shift.id}
-                        data-employee-id={employee.id}
-                        className={`absolute top-1 bottom-1 rounded transition-all pointer-events-auto z-30 ${
-                          isDraggingShift ? 'z-40 shadow-xl cursor-grabbing' : isHovered ? 'shadow-lg cursor-pointer' : 'cursor-pointer'
-                        } ${
-                          isContextMenuTarget
-                            ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline'
-                            : isSelectedShift
-                            ? 'ring-2 ring-sky-400/90 ring-offset-1 ring-offset-theme-timeline'
-                            : ''
-                        }`}
-                        style={{
-                          left: `${pos.leftPx}px`,
-                          width: `${pos.widthPx}px`,
-                          backgroundColor: isHovered || isDraggingShift ? jobColor.hoverBgColor : jobColor.bgColor,
-                          borderWidth: '1px',
-                          borderColor: jobColor.color,
-                          borderStyle: isDraftShift ? 'dashed' : 'solid',
-                          transform: isHovered && !isDraggingShift ? 'scale(1.02)' : 'scale(1)',
-                        }}
-                        onMouseEnter={(e) => {
-                          setHoveredShift(shift.id);
-                          showTooltipFn(shift.id, e.currentTarget);
-                        }}
-                        onMouseLeave={() => {
-                          setHoveredShift(null);
-                          setTooltip(null);
-                        }}
-                      >
-                        {isDraftShift && (
-                          <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
-                            DRAFT
-                          </span>
-                        )}
-                        {isBaselinePublished && !isDraftShift && (
-                          <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
-                            PUBLISHED
-                          </span>
-                        )}
-                        <div
-                          data-shift-body="true"
-                          className="absolute left-2 right-2 top-0 bottom-0 cursor-grab active:cursor-grabbing touch-none overflow-hidden pointer-events-auto"
-                        >
-                          <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
-                            {showTimeText ? (
-                              <span
-                                className={`text-[10px] font-medium truncate shrink-0 ${
-                                  isHovered || isDraggingShift ? 'text-white' : ''
-                                }`}
-                                style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                              >
-                                {formatHour(startHour)}-{formatHour(endHour)}
-                              </span>
-                          ) : (
-                              <span
-                                className={`text-[9px] font-medium truncate shrink-0 ${
-                                  isHovered || isDraggingShift ? 'text-white' : ''
-                                }`}
-                                style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                              >
-                                {Math.round(shiftDuration)}h
-                              </span>
-                            )}
-                            {shiftNotes && (
-                              <span
-                                className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
-                                  isHovered || isDraggingShift ? 'text-white/80' : ''
-                                }`}
-                                style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                                title={shiftNotes}
-                              >
-                                {shiftNotes}
-                              </span>
-                            )}
-                          </div>
-                          {showJobText && shift.job && (
-                            <span
-                              className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
-                                isHovered || isDraggingShift ? 'text-white/90' : ''
-                              }`}
-                              style={{ color: isHovered || isDraggingShift ? '#fff' : jobColor.color }}
-                            >
-                              {shift.job}
-                            </span>
-                          )}
-                        </div>
+                      return (
+                        <TimelineDraggableShift key={shift.id} shiftId={shift.id} disabled={!dragEnabled}>
+                          {({ setNodeRef, attributes, listeners, transformStyle, isDragging: isDndDragging }) => {
+                            const isReassignDragging = isDndDragging || draggingShiftId === String(shift.id);
+                            const isAnyDragging = isDraggingShift || isReassignDragging;
+                            const hoverScale = isHovered && !isAnyDragging ? 'scale(1.02)' : 'scale(1)';
+                            const computedTransform = isReassignDragging
+                              ? transformStyle
+                              : transformStyle
+                              ? `${transformStyle} ${hoverScale}`
+                              : hoverScale;
 
-                        <div
-                          data-resize-handle="end"
-                          data-edge="right"
-                          className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                            isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
-                          }`}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
+                            return (
+                              <div
+                                ref={setNodeRef}
+                                data-shift="true"
+                                data-shift-root="true"
+                                data-shift-id={shift.id}
+                                data-employee-id={employee.id}
+                                className={`absolute top-1 bottom-1 rounded transition-all z-30 ${
+                                  isAnyDragging ? 'z-40 shadow-xl cursor-grabbing pointer-events-none opacity-45 ring-1 ring-sky-300/80' : isHovered ? 'shadow-lg cursor-pointer' : 'cursor-pointer'
+                                } ${
+                                  isContextMenuTarget
+                                    ? 'ring-2 ring-amber-300/95 ring-offset-2 ring-offset-theme-timeline'
+                                    : isSelectedShift
+                                    ? 'ring-2 ring-sky-400/90 ring-offset-1 ring-offset-theme-timeline'
+                                    : ''
+                                }`}
+                                style={{
+                                  left: `${pos.leftPx}px`,
+                                  width: `${pos.widthPx}px`,
+                                  backgroundColor: isHovered || isAnyDragging ? jobColor.hoverBgColor : jobColor.bgColor,
+                                  borderWidth: '1px',
+                                  borderColor: jobColor.color,
+                                  borderStyle: isAnyDragging || isDraftShift ? 'dashed' : 'solid',
+                                  transform: computedTransform,
+                                }}
+                                onMouseEnter={(e) => {
+                                  setHoveredShift(shift.id);
+                                  showTooltipFn(shift.id, e.currentTarget);
+                                }}
+                                onMouseLeave={() => {
+                                  setHoveredShift(null);
+                                  setTooltip(null);
+                                }}
+                                onDoubleClick={() => {
+                                  openShiftEditor(shift);
+                                }}
+                                onPointerDown={() => {
+                                  if (!dragEnabled && process.env.NODE_ENV !== 'production') {
+                                    console.debug('[Timeline] drag disabled', { shiftId: shift.id, reason: dragDisabledReason ?? 'unknown' });
+                                  }
+                                }}
+                                {...(dragEnabled ? attributes : {})}
+                                {...(dragEnabled ? listeners : {})}
+                              >
+                                {isDraftShift && (
+                                  <span className="absolute top-0.5 right-1 px-1 rounded bg-amber-500/30 text-[8px] font-semibold text-amber-100/90">
+                                    DRAFT
+                                  </span>
+                                )}
+                                {isBaselinePublished && !isDraftShift && (
+                                  <span className="absolute top-0.5 right-1 px-1 rounded bg-emerald-500/20 text-[8px] font-semibold text-emerald-100/90">
+                                    PUBLISHED
+                                  </span>
+                                )}
+                                <div
+                                  data-shift-body="true"
+                                  className={`absolute left-2 right-2 top-0 bottom-0 touch-none overflow-hidden pointer-events-auto ${
+                                    dragEnabled ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+                                  }`}
+                                >
+                                  <div className="h-full flex items-center px-0.5 overflow-hidden min-w-0">
+                                    {showTimeText ? (
+                                      <span
+                                        className={`text-[10px] font-medium truncate shrink-0 ${
+                                          isHovered || isAnyDragging ? 'text-white' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      >
+                                        {formatHour(startHour)}-{formatHour(endHour)}
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className={`text-[9px] font-medium truncate shrink-0 ${
+                                          isHovered || isAnyDragging ? 'text-white' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      >
+                                        {Math.round(shiftDuration)}h
+                                      </span>
+                                    )}
+                                    {shiftNotes && (
+                                      <span
+                                        className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
+                                          isHovered || isAnyDragging ? 'text-white/80' : ''
+                                        }`}
+                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        title={shiftNotes}
+                                      >
+                                        {shiftNotes}
+                                      </span>
+                                    )}
+                                  </div>
+                                  {showJobText && shift.job && (
+                                    <span
+                                      className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
+                                        isHovered || isAnyDragging ? 'text-white/90' : ''
+                                      }`}
+                                      style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                    >
+                                      {shift.job}
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div
+                                  data-resize-handle="end"
+                                  data-edge="right"
+                                  className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
+                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                  }`}
+                                  onPointerDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
+                                >
+                                  <span
+                                    className={`w-0.5 h-4 rounded-full transition-colors ${
+                                      isEndDrag ? 'bg-amber-200' : 'bg-white/50'
+                                    } group-hover/edge:bg-white/80`}
+                                  />
+                                </div>
+                                <div
+                                  data-resize-handle="start"
+                                  data-edge="left"
+                                  className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
+                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                  }`}
+                                  onPointerDown={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                  }}
+                                >
+                                  <span
+                                    className={`w-0.5 h-4 rounded-full transition-colors ${
+                                      isStartDrag ? 'bg-amber-200' : 'bg-white/50'
+                                    } group-hover/edge:bg-white/80`}
+                                  />
+                                </div>
+                              </div>
+                            );
                           }}
-                        >
-                          <span
-                            className={`w-0.5 h-4 rounded-full transition-colors ${
-                              isEndDrag ? 'bg-amber-200' : 'bg-white/50'
-                            } group-hover/edge:bg-white/80`}
-                          />
-                        </div>
-                        <div
-                          data-resize-handle="start"
-                          data-edge="left"
-                          className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                            isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
-                          }`}
-                          onPointerDown={(event) => {
-                            event.preventDefault();
-                            event.stopPropagation();
-                          }}
-                        >
-                          <span
-                            className={`w-0.5 h-4 rounded-full transition-colors ${
-                              isStartDrag ? 'bg-amber-200' : 'bg-white/50'
-                            } group-hover/edge:bg-white/80`}
-                          />
-                        </div>
-                      </div>
-                    );
-                  })}
+                        </TimelineDraggableShift>
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -3243,7 +3362,7 @@ export function Timeline() {
             : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
         }`}
       >
-        Single Day
+        Day View
       </button>
       <button
         type="button"
@@ -3254,7 +3373,7 @@ export function Timeline() {
             : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
         }`}
       >
-        Continuous
+        Week View
       </button>
     </div>
   ) : undefined;
