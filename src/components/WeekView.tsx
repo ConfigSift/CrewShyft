@@ -2045,7 +2045,7 @@ export function WeekView() {
         onDragCancel={handleDragCancel}
       >
         {isDraftMode && (
-          <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+          <div className="shrink-0 border-b border-theme-primary bg-theme-secondary px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
             <div className="flex items-center justify-between gap-4 min-w-max">
               <div className="flex items-center gap-2">
                 {draftBadge}
@@ -2095,8 +2095,8 @@ export function WeekView() {
               }`}
             >
               <div
-                className={`border-b border-theme-primary grid ${weekRowGridColsClass} shrink-0 sticky top-0 z-30`}
-                style={{ backgroundColor: '#f6f7fb', height: 'var(--weekHeaderH)' }}
+                className={`border-b border-theme-primary grid ${weekRowGridColsClass} shrink-0 sticky top-0 z-30 bg-theme-secondary print:bg-zinc-50`}
+                style={{ height: 'var(--weekHeaderH)' }}
               >
                 <div className={`border-r border-theme-primary/50 flex items-center justify-center text-[10px] font-semibold uppercase tracking-wide ${statusTone}`}>
                   {publishStatusLabel}
@@ -2136,8 +2136,8 @@ export function WeekView() {
               </div>
 
               <div
-                className={`border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky z-30`}
-                style={{ backgroundColor: '#f6f7fb', height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
+                className={`border-b border-theme-primary/30 grid ${weekRowGridColsClass} shrink-0 sticky z-30 bg-theme-secondary print:bg-zinc-50`}
+                style={{ height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
               >
                 <div className="border-r border-theme-primary/30 flex items-center px-2">
                   <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>Coverage</span>
@@ -2380,16 +2380,16 @@ export function WeekView() {
 
                           <div
                             className={`h-full border-l border-theme-primary/30 flex items-center justify-center ${
-                              isOvertime ? 'bg-red-50 border border-red-200' : 'bg-emerald-50 border border-emerald-200'
+                              isOvertime ? 'border border-red-500/30 bg-red-500/10' : 'border border-emerald-500/30 bg-emerald-500/10'
                             }`}
                           >
                             {hrs > 0 ? (
                               <div className="flex flex-col items-center leading-tight">
-                                <span className={`font-semibold tabular-nums ${isOvertime ? 'text-red-600' : 'text-emerald-700'}`} style={{ fontSize: 'var(--weekHoursSize)' }}>
+                                <span className={`font-semibold tabular-nums ${isOvertime ? 'text-red-400' : 'text-emerald-400'}`} style={{ fontSize: 'var(--weekHoursSize)' }}>
                                   {Math.round(hrs)}h
                                 </span>
                                 {isOvertime ? (
-                                  <span className="text-red-600 font-semibold text-xs">OT</span>
+                                  <span className="text-xs font-semibold text-red-400">OT</span>
                                 ) : null}
                               </div>
                             ) : (
@@ -2417,7 +2417,7 @@ export function WeekView() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-[80] min-w-[180px] rounded-md border border-zinc-200 bg-white py-1.5 shadow-lg"
+          className="fixed z-[80] min-w-[180px] rounded-md border border-theme-primary bg-theme-secondary py-1.5 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
         >
@@ -2425,14 +2425,14 @@ export function WeekView() {
             <div className="px-1">
               <button
                 type="button"
-                className="w-full rounded px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-100"
+                className="w-full rounded px-3 py-2 text-left text-sm text-theme-primary hover:bg-theme-hover"
                 onClick={handleContextCopyShift}
               >
                 Copy shift
               </button>
               <button
                 type="button"
-                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-400 hover:bg-red-500/10"
                 onClick={() => {
                   void handleContextDeleteShift();
                 }}
@@ -2446,7 +2446,7 @@ export function WeekView() {
               <button
                 type="button"
                 className={`w-full rounded px-3 py-2 text-left text-sm ${
-                  isPasteMenuDisabled ? 'text-zinc-400' : 'text-zinc-800 hover:bg-zinc-100'
+                  isPasteMenuDisabled ? 'text-theme-muted' : 'text-theme-primary hover:bg-theme-hover'
                 }`}
                 title={pasteMenuTitle}
                 onClick={() => {

@@ -9,6 +9,7 @@ type ConfirmDialogProps = {
   description?: string;
   confirmText?: string;
   cancelText?: string;
+  loadingText?: string;
   variant?: 'danger' | 'default';
   onConfirm: () => Promise<void> | void;
   onCancel: () => void;
@@ -22,6 +23,7 @@ export function ConfirmDialog({
   description,
   confirmText = 'Delete',
   cancelText = 'Cancel',
+  loadingText = 'Working...',
   variant = 'danger',
   onConfirm,
   onCancel,
@@ -61,7 +63,7 @@ export function ConfirmDialog({
             }}
             disabled={isLoading}
           >
-            {isLoading ? 'Deleting…' : confirmText}
+            {isLoading ? loadingText : confirmText}
           </button>
         </div>
       </div>

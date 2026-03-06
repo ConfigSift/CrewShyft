@@ -3089,7 +3089,7 @@ export function Timeline() {
                                         className={`text-[10px] font-medium truncate shrink-0 ${
                                           isHovered || isAnyDragging ? 'text-white' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                       >
                                         {formatHour(startHour)}-{formatHour(endHour)}
                                       </span>
@@ -3098,7 +3098,7 @@ export function Timeline() {
                                         className={`text-[9px] font-medium truncate shrink-0 ${
                                           isHovered || isAnyDragging ? 'text-white' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                       >
                                         {Math.round(shiftDuration)}h
                                       </span>
@@ -3108,7 +3108,7 @@ export function Timeline() {
                                         className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
                                           isHovered || isAnyDragging ? 'text-white/80' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                         title={shiftNotes}
                                       >
                                         {shiftNotes}
@@ -3120,7 +3120,7 @@ export function Timeline() {
                                       className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
                                         isHovered || isAnyDragging ? 'text-white/90' : ''
                                       }`}
-                                      style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                     >
                                       {shift.job}
                                     </span>
@@ -3131,7 +3131,7 @@ export function Timeline() {
                                   data-resize-handle="end"
                                 data-edge="right"
                                   className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-zinc-500/20'
                                   }`}
                                   onPointerDown={(event) => {
                                     event.preventDefault();
@@ -3140,15 +3140,15 @@ export function Timeline() {
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
-                                      isEndDrag ? 'bg-amber-200' : 'bg-white/50'
-                                    } group-hover/edge:bg-white/80`}
+                                      isEndDrag ? 'bg-amber-200' : 'bg-zinc-300/50'
+                                    } group-hover/edge:bg-zinc-200/80`}
                                   />
                                 </div>
                                 <div
                                   data-resize-handle="start"
                                 data-edge="left"
                                   className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-zinc-500/20'
                                   }`}
                                   onPointerDown={(event) => {
                                     event.preventDefault();
@@ -3157,8 +3157,8 @@ export function Timeline() {
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
-                                      isStartDrag ? 'bg-amber-200' : 'bg-white/50'
-                                    } group-hover/edge:bg-white/80`}
+                                      isStartDrag ? 'bg-amber-200' : 'bg-zinc-300/50'
+                                    } group-hover/edge:bg-zinc-200/80`}
                                   />
                                 </div>
                               </div>
@@ -3554,7 +3554,7 @@ export function Timeline() {
                                         className={`text-[10px] font-medium truncate shrink-0 ${
                                           isHovered || isAnyDragging ? 'text-white' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                       >
                                         {formatHour(startHour)}-{formatHour(endHour)}
                                       </span>
@@ -3563,7 +3563,7 @@ export function Timeline() {
                                         className={`text-[9px] font-medium truncate shrink-0 ${
                                           isHovered || isAnyDragging ? 'text-white' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                       >
                                         {Math.round(shiftDuration)}h
                                       </span>
@@ -3573,7 +3573,7 @@ export function Timeline() {
                                         className={`ml-2 text-[9px] truncate text-right flex-1 min-w-0 ${
                                           isHovered || isAnyDragging ? 'text-white/80' : ''
                                         }`}
-                                        style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                        style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                         title={shiftNotes}
                                       >
                                         {shiftNotes}
@@ -3585,7 +3585,7 @@ export function Timeline() {
                                       className={`absolute left-0.5 bottom-0 text-[9px] truncate max-w-full ${
                                         isHovered || isAnyDragging ? 'text-white/90' : ''
                                       }`}
-                                      style={{ color: isHovered || isAnyDragging ? '#fff' : jobColor.color }}
+                                      style={isHovered || isAnyDragging ? undefined : { color: jobColor.color }}
                                     >
                                       {shift.job}
                                     </span>
@@ -3596,7 +3596,7 @@ export function Timeline() {
                                   data-resize-handle="end"
                                   data-edge="right"
                                   className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-r flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                    isEndDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-zinc-500/20'
                                   }`}
                                   onPointerDown={(event) => {
                                     event.preventDefault();
@@ -3605,15 +3605,15 @@ export function Timeline() {
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
-                                      isEndDrag ? 'bg-amber-200' : 'bg-white/50'
-                                    } group-hover/edge:bg-white/80`}
+                                      isEndDrag ? 'bg-amber-200' : 'bg-zinc-300/50'
+                                    } group-hover/edge:bg-zinc-200/80`}
                                   />
                                 </div>
                                 <div
                                   data-resize-handle="start"
                                   data-edge="left"
                                   className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize rounded-l flex items-center justify-center touch-none group/edge transition-colors z-40 ${
-                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-white/20'
+                                    isStartDrag ? 'bg-amber-400/20 ring-1 ring-amber-400/60' : 'hover:bg-zinc-500/20'
                                   }`}
                                   onPointerDown={(event) => {
                                     event.preventDefault();
@@ -3622,8 +3622,8 @@ export function Timeline() {
                                 >
                                   <span
                                     className={`w-0.5 h-4 rounded-full transition-colors ${
-                                      isStartDrag ? 'bg-amber-200' : 'bg-white/50'
-                                    } group-hover/edge:bg-white/80`}
+                                      isStartDrag ? 'bg-amber-200' : 'bg-zinc-300/50'
+                                    } group-hover/edge:bg-zinc-200/80`}
                                   />
                                 </div>
                               </div>
@@ -3724,7 +3724,7 @@ export function Timeline() {
       />
 
       {isDraftMode && (
-        <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
+        <div className="shrink-0 border-b border-theme-primary bg-theme-secondary px-2 sm:px-4 py-2 sm:h-12 overflow-x-auto">
           <div className="flex items-center justify-between gap-4 min-w-max">
             <div className="flex items-center gap-2">
               {draftBadge}
@@ -3850,7 +3850,7 @@ export function Timeline() {
       {contextMenu && (
         <div
           ref={contextMenuRef}
-          className="fixed z-[80] min-w-[180px] rounded-md border border-zinc-200 bg-white py-1.5 shadow-lg"
+          className="fixed z-[80] min-w-[180px] rounded-md border border-theme-primary bg-theme-secondary py-1.5 shadow-lg"
           style={{ left: contextMenu.x, top: contextMenu.y }}
           role="menu"
         >
@@ -3858,14 +3858,14 @@ export function Timeline() {
             <div className="px-1">
               <button
                 type="button"
-                className="w-full rounded px-3 py-2 text-left text-sm text-zinc-800 hover:bg-zinc-100"
+                className="w-full rounded px-3 py-2 text-left text-sm text-theme-primary hover:bg-theme-hover"
                 onClick={handleContextCopyShift}
               >
                 Copy shift
               </button>
               <button
                 type="button"
-                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-600 hover:bg-red-50"
+                className="mt-0.5 w-full rounded px-3 py-2 text-left text-sm text-red-400 hover:bg-red-500/10"
                 onClick={() => {
                   void handleContextDeleteShift();
                 }}
@@ -3879,7 +3879,7 @@ export function Timeline() {
               <button
                 type="button"
                 className={`w-full rounded px-3 py-2 text-left text-sm ${
-                  isPasteMenuDisabled ? 'text-zinc-400' : 'text-zinc-800 hover:bg-zinc-100'
+                  isPasteMenuDisabled ? 'text-theme-muted' : 'text-theme-primary hover:bg-theme-hover'
                 }`}
                 title={pasteMenuTitle}
                 onClick={() => {

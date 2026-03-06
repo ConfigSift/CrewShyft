@@ -3,19 +3,15 @@
 import { useMemo } from 'react';
 import type { Employee, Shift } from '../../types';
 import {
-  classifyShift,
   calculateWeeklyHours,
+  classifyShift,
+  compareJobs,
+  formatHourForReport,
   formatReportTimestamp,
   formatReportWeekRange,
-  formatHourForReport,
   getJobColorClasses,
-  compareJobs,
 } from './report-utils';
 import { ReportHeader } from './ReportHeader';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
 
 interface WeeklyGroup {
   job: string;
@@ -26,14 +22,9 @@ interface WeeklyGroup {
 
 interface WeeklyRow {
   employee: Employee;
-  /** Shifts keyed by YYYY-MM-DD */
   shiftsByDay: Map<string, Shift[]>;
   totalHours: number;
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 function toYMD(date: Date): string {
   const year = date.getFullYear();
@@ -48,81 +39,71 @@ function formatDayHeader(date: Date): { weekday: string; monthDay: string } {
   return { weekday, monthDay };
 }
 
-function buildWeeklyGroups(
-  employees: Employee[],
-  shifts: Shift[],
-  weekDates: Date[]
-): WeeklyGroup[] {
-  const employeeMap = new Map(employees.map((e) => [e.id, e]));
+function buildWeeklyGroups(employees: Employee[], shifts: Shift[], weekDates: Date[]): WeeklyGroup[] {
+  const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
   const dateStrings = weekDates.map(toYMD);
-
-  // Index shifts by employee
   const shiftsByEmployee = new Map<string, Shift[]>();
+
   shifts.forEach((shift) => {
     if (shift.isBlocked) return;
     if (!shiftsByEmployee.has(shift.employeeId)) {
       shiftsByEmployee.set(shift.employeeId, []);
     }
-    shiftsByEmployee.get(shift.employeeId)!.push(shift);
+    shiftsByEmployee.get(shift.employeeId)?.push(shift);
   });
 
-  // Determine each employee's primary job from their shifts this week
   const employeePrimaryJob = new Map<string, string>();
-  shiftsByEmployee.forEach((empShifts, empId) => {
-    // Use the job from their earliest shift
-    const sorted = [...empShifts].sort((a, b) => a.date.localeCompare(b.date) || a.startHour - b.startHour);
-    for (const s of sorted) {
-      if (s.job) {
-        employeePrimaryJob.set(empId, s.job);
+  shiftsByEmployee.forEach((employeeShifts, employeeId) => {
+    const sorted = [...employeeShifts].sort(
+      (left, right) => left.date.localeCompare(right.date) || left.startHour - right.startHour,
+    );
+    for (const shift of sorted) {
+      if (shift.job) {
+        employeePrimaryJob.set(employeeId, shift.job);
         break;
       }
     }
   });
 
-  // Build rows — only for employees with at least one shift
   const groupMap = new Map<string, WeeklyRow[]>();
-  shiftsByEmployee.forEach((empShifts, empId) => {
-    const emp = employeeMap.get(empId);
-    if (!emp || !emp.isActive) return;
+  shiftsByEmployee.forEach((employeeShifts, employeeId) => {
+    const employee = employeeMap.get(employeeId);
+    if (!employee || !employee.isActive) return;
 
     const shiftsByDay = new Map<string, Shift[]>();
-    dateStrings.forEach((d) => shiftsByDay.set(d, []));
-    empShifts.forEach((shift) => {
-      const existing = shiftsByDay.get(shift.date);
-      if (existing) existing.push(shift);
+    dateStrings.forEach((date) => shiftsByDay.set(date, []));
+    employeeShifts.forEach((shift) => {
+      shiftsByDay.get(shift.date)?.push(shift);
     });
-    // Sort shifts within each day by start time
-    shiftsByDay.forEach((list) => list.sort((a, b) => a.startHour - b.startHour));
+    shiftsByDay.forEach((list) => list.sort((left, right) => left.startHour - right.startHour));
 
-    const totalHours = calculateWeeklyHours(empId, empShifts);
-    const job = employeePrimaryJob.get(empId) ?? 'Unassigned';
+    const totalHours = calculateWeeklyHours(employeeId, employeeShifts);
+    const job = employeePrimaryJob.get(employeeId) ?? 'Unassigned';
 
-    if (!groupMap.has(job)) groupMap.set(job, []);
-    groupMap.get(job)!.push({ employee: emp, shiftsByDay, totalHours });
+    if (!groupMap.has(job)) {
+      groupMap.set(job, []);
+    }
+    groupMap.get(job)?.push({ employee, shiftsByDay, totalHours });
   });
 
-  // Sort rows within groups alphabetically
-  groupMap.forEach((rows) => rows.sort((a, b) => a.employee.name.localeCompare(b.employee.name)));
+  groupMap.forEach((rows) => rows.sort((left, right) => left.employee.name.localeCompare(right.employee.name)));
 
   const result: WeeklyGroup[] = [];
-  const jobList = Array.from(groupMap.keys()).sort(compareJobs);
-  jobList.forEach((job) => {
-    const rows = groupMap.get(job);
-    if (!rows || rows.length === 0) return;
-    const colors = getJobColorClasses(job);
-    result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
-  });
+  Array.from(groupMap.keys())
+    .sort(compareJobs)
+    .forEach((job) => {
+      const rows = groupMap.get(job);
+      if (!rows || rows.length === 0) return;
+      const colors = getJobColorClasses(job);
+      result.push({ job, color: colors.color, bgColor: colors.bgColor, rows });
+    });
 
   return result;
 }
 
-// ---------------------------------------------------------------------------
-// Sub-components
-// ---------------------------------------------------------------------------
-
 function ShiftCell({ shifts }: { shifts: Shift[] }) {
   if (shifts.length === 0) {
-    return <span className="text-zinc-300">&mdash;</span>;
+    return <span className="text-theme-muted print:text-zinc-300">&mdash;</span>;
   }
 
   return (
@@ -141,7 +122,7 @@ function ShiftCell({ shifts }: { shifts: Shift[] }) {
               {formatHourForReport(shift.endHour, { isEnd: true })}
             </span>
             <span
-              className="w-[5px] h-[5px] rounded-full flex-shrink-0"
+              className="h-[5px] w-[5px] flex-shrink-0 rounded-full"
               style={{ backgroundColor: period === 'AM' ? '#f59e0b' : '#6366f1' }}
               title={period}
             />
@@ -151,10 +132,6 @@ function ShiftCell({ shifts }: { shifts: Shift[] }) {
     </div>
   );
 }
-
-// ---------------------------------------------------------------------------
-// Component
-// ---------------------------------------------------------------------------
 
 interface WeeklyScheduleReportProps {
   weekDates: Date[];
@@ -173,157 +150,148 @@ export function WeeklyScheduleReport({
   loading,
   error,
 }: WeeklyScheduleReportProps) {
-  const groups = useMemo(
-    () => buildWeeklyGroups(employees, shifts, weekDates),
-    [employees, shifts, weekDates]
-  );
-
+  const groups = useMemo(() => buildWeeklyGroups(employees, shifts, weekDates), [employees, shifts, weekDates]);
   const dateStrings = useMemo(() => weekDates.map(toYMD), [weekDates]);
 
-  // Summary stats
   const totalStaff = useMemo(() => {
     const ids = new Set<string>();
-    shifts.forEach((s) => { if (!s.isBlocked) ids.add(s.employeeId); });
+    shifts.forEach((shift) => {
+      if (!shift.isBlocked) {
+        ids.add(shift.employeeId);
+      }
+    });
     return ids.size;
   }, [shifts]);
 
   const totalLaborHours = useMemo(() => {
-    let sum = 0;
-    shifts.forEach((s) => {
-      if (!s.isBlocked) sum += Math.max(0, s.endHour - s.startHour);
+    let total = 0;
+    shifts.forEach((shift) => {
+      if (!shift.isBlocked) {
+        total += Math.max(0, shift.endHour - shift.startHour);
+      }
     });
-    return Math.round(sum * 10) / 10;
+    return Math.round(total * 10) / 10;
   }, [shifts]);
 
   const estLaborCost = useMemo(() => {
-    const employeeMap = new Map(employees.map((e) => [e.id, e]));
-    let cost = 0;
-    shifts.forEach((s) => {
-      if (s.isBlocked) return;
-      const hours = Math.max(0, s.endHour - s.startHour);
-      const rate = s.payRate ?? employeeMap.get(s.employeeId)?.hourlyPay ?? 0;
-      cost += hours * rate;
+    const employeeMap = new Map(employees.map((employee) => [employee.id, employee]));
+    let total = 0;
+    shifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      const hours = Math.max(0, shift.endHour - shift.startHour);
+      const rate = shift.payRate ?? employeeMap.get(shift.employeeId)?.hourlyPay ?? 0;
+      total += hours * rate;
     });
-    return Math.round(cost);
+    return Math.round(total);
   }, [employees, shifts]);
 
   const weekStart = weekDates[0];
   const weekEnd = weekDates[6];
+
   return (
-    <div className="report-weekly-root">
+    <div className="report-weekly-root text-theme-primary print:text-black">
       <ReportHeader
         title="Weekly Schedule"
         subtitle={formatReportWeekRange(weekStart, weekEnd)}
         restaurantName={restaurantName}
       />
 
-      {/* Stats bar */}
-      <div className="stats-bar flex gap-4 px-3 py-2 bg-zinc-100 rounded-md mb-4 text-[11px]">
+      <div className="stats-bar mb-4 flex gap-4 rounded-md bg-theme-secondary px-3 py-2 text-[11px] print:bg-zinc-100">
         <div className="stat-item flex items-center gap-1">
-          <span className="stat-label text-zinc-400 font-medium">Staff</span>
-          <span className="stat-value font-bold text-zinc-900">{totalStaff}</span>
+          <span className="stat-label font-medium text-theme-muted print:text-zinc-400">Staff</span>
+          <span className="stat-value font-bold text-theme-primary print:text-zinc-900">{totalStaff}</span>
         </div>
         <div className="stat-item flex items-center gap-1">
-          <span className="stat-label text-zinc-400 font-medium">Total Hours</span>
-          <span className="stat-value font-bold text-zinc-900">{totalLaborHours}h</span>
+          <span className="stat-label font-medium text-theme-muted print:text-zinc-400">Total Hours</span>
+          <span className="stat-value font-bold text-theme-primary print:text-zinc-900">{totalLaborHours}h</span>
         </div>
         {estLaborCost > 0 && (
           <div className="stat-item flex items-center gap-1">
-            <span className="stat-label text-zinc-400 font-medium">Est. Labor</span>
-            <span className="stat-value font-bold text-zinc-900">
+            <span className="stat-label font-medium text-theme-muted print:text-zinc-400">Est. Labor</span>
+            <span className="stat-value font-bold text-theme-primary print:text-zinc-900">
               ${estLaborCost.toLocaleString()}
             </span>
           </div>
         )}
       </div>
 
-      {/* Loading / Error states */}
-      {loading && (
-        <div className="text-center py-12 text-zinc-400 text-sm">Loading shifts...</div>
-      )}
-      {error && (
-        <div className="text-center py-8 text-red-500 text-sm">Error: {error}</div>
-      )}
+      {loading && <div className="py-12 text-center text-sm text-theme-secondary print:text-zinc-500">Loading shifts...</div>}
+      {error && <div className="py-8 text-center text-sm text-red-400 print:text-red-600">Error: {error}</div>}
+      {!loading && !error && shifts.length === 0 && <div className="empty-state">No shifts scheduled.</div>}
 
-      {/* Empty state */}
-      {!loading && !error && shifts.length === 0 && (
-        <div className="empty-state">No shifts scheduled.</div>
-      )}
-
-      {/* Week table */}
       {!loading && !error && shifts.length > 0 && (
-        <table className="w-full border-collapse text-[10px]">
-          <thead>
-            <tr>
-              <th className="text-left px-2 py-1.5 border border-zinc-200 bg-zinc-50 font-bold text-zinc-700 w-[120px] min-w-[120px]">
-                Employee
-              </th>
-              {weekDates.map((d, i) => {
-                const { weekday, monthDay } = formatDayHeader(d);
-                const isToday = toYMD(d) === toYMD(new Date());
-                return (
-                  <th
-                    key={i}
-                    className={`text-center px-1 py-1.5 border border-zinc-200 font-bold ${
-                      isToday ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-700'
-                    }`}
-                  >
-                    <div className="text-[10px]">{weekday}</div>
-                    <div className="text-[9px] font-medium text-zinc-400">{monthDay}</div>
-                  </th>
-                );
-              })}
-              <th className="text-center px-1 py-1.5 border border-zinc-200 bg-zinc-50 font-bold text-zinc-700 w-[48px] min-w-[48px]">
-                Hours
-              </th>
-            </tr>
-          </thead>
-          {groups.map((group) => (
-            <tbody key={group.job}>
-                {/* Role separator */}
+        <div className="overflow-x-auto rounded-xl border border-theme-primary bg-theme-secondary print:border-zinc-200 print:bg-white">
+          <table className="w-full border-collapse text-[10px]">
+            <thead>
+              <tr>
+                <th className="w-[120px] min-w-[120px] border border-theme-primary bg-theme-tertiary px-2 py-1.5 text-left font-bold text-theme-primary print:border-zinc-200 print:bg-zinc-50 print:text-zinc-700">
+                  Employee
+                </th>
+                {weekDates.map((date, index) => {
+                  const { weekday, monthDay } = formatDayHeader(date);
+                  const isToday = toYMD(date) === toYMD(new Date());
+                  return (
+                    <th
+                      key={index}
+                      className={`border border-theme-primary px-1 py-1.5 text-center font-bold ${
+                        isToday
+                          ? 'bg-amber-500/10 text-amber-400 print:bg-amber-50 print:text-amber-700'
+                          : 'bg-theme-tertiary text-theme-primary print:bg-zinc-50 print:text-zinc-700'
+                      }`}
+                    >
+                      <div className="text-[10px]">{weekday}</div>
+                      <div className={`text-[9px] font-medium ${isToday ? 'text-amber-300 print:text-amber-600' : 'text-theme-muted print:text-zinc-400'}`}>
+                        {monthDay}
+                      </div>
+                    </th>
+                  );
+                })}
+                <th className="w-[48px] min-w-[48px] border border-theme-primary bg-theme-tertiary px-1 py-1.5 text-center font-bold text-theme-primary print:border-zinc-200 print:bg-zinc-50 print:text-zinc-700">
+                  Hours
+                </th>
+              </tr>
+            </thead>
+            {groups.map((group) => (
+              <tbody key={group.job}>
                 <tr className="week-role-separator">
                   <td
                     colSpan={9}
-                    className="px-2 py-1 text-[10px] font-bold uppercase tracking-wide border-0"
+                    className="border-0 px-2 py-1 text-[10px] font-bold uppercase tracking-wide"
                     style={{ backgroundColor: group.bgColor, color: group.color }}
                   >
                     <span className="flex items-center gap-1.5">
-                      <span
-                        className="w-2 h-2 rounded-full flex-shrink-0"
-                        style={{ backgroundColor: group.color }}
-                      />
+                      <span className="h-2 w-2 flex-shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
                       {group.job}
                       <span className="text-[9px] font-semibold opacity-60">({group.rows.length})</span>
                     </span>
                   </td>
                 </tr>
 
-                {/* Employee rows */}
                 {group.rows.map((row) => (
                   <tr key={row.employee.id}>
-                    <td className="px-2 py-1 border border-zinc-200 font-semibold text-zinc-800 truncate max-w-[120px]">
+                    <td className="max-w-[120px] truncate border border-theme-primary px-2 py-1 font-semibold text-theme-primary print:border-zinc-200 print:text-zinc-800">
                       {row.employee.name}
                     </td>
-                    {dateStrings.map((dateStr, i) => (
+                    {dateStrings.map((dateString, index) => (
                       <td
-                        key={i}
-                        className="px-1 py-1 border border-zinc-200 text-center align-top"
+                        key={index}
+                        className="border border-theme-primary px-1 py-1 text-center align-top print:border-zinc-200"
                       >
-                        <ShiftCell shifts={row.shiftsByDay.get(dateStr) ?? []} />
+                        <ShiftCell shifts={row.shiftsByDay.get(dateString) ?? []} />
                       </td>
                     ))}
-                    <td className="px-1 py-1 border border-zinc-200 text-center font-bold text-zinc-700">
+                    <td className="border border-theme-primary px-1 py-1 text-center font-bold text-theme-secondary print:border-zinc-200 print:text-zinc-700">
                       {row.totalHours > 0 ? `${row.totalHours}h` : '\u2014'}
                     </td>
                   </tr>
                 ))}
-            </tbody>
-          ))}
-        </table>
+              </tbody>
+            ))}
+          </table>
+        </div>
       )}
 
-      {/* Footer */}
-      <div className="report-footer flex flex-wrap items-center gap-x-4 gap-y-1 mt-4 pt-3 border-t border-zinc-200 text-[10px] text-zinc-500">
+      <div className="report-footer mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-theme-primary pt-3 text-[10px] text-theme-secondary print:border-zinc-200 print:text-zinc-500">
         <div className="footer-meta">Generated {formatReportTimestamp()}</div>
       </div>
     </div>

@@ -152,7 +152,7 @@ function JobFilterChips({
   onSelectNone,
 }: JobFilterChipsProps) {
   return (
-    <div className="no-print border-b border-theme-primary bg-theme-tertiary/40 px-4 py-2">
+    <div className="no-print border-b border-theme-primary bg-theme-tertiary px-4 py-2 print:border-zinc-200 print:bg-white">
       <div className="flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2">
           <span className="text-[11px] font-medium uppercase tracking-[0.12em] text-theme-muted">Filter jobs</span>
@@ -161,14 +161,14 @@ function JobFilterChips({
           <button
             type="button"
             onClick={onSelectAll}
-            className="rounded-full border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1"
+            className="rounded-full border border-theme-primary bg-theme-secondary px-2 py-0.5 text-[11px] font-medium text-theme-secondary transition-colors hover:border-theme-secondary hover:bg-theme-hover hover:text-theme-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 print:border-zinc-200 print:bg-zinc-100 print:text-zinc-700"
           >
             All
           </button>
           <button
             type="button"
             onClick={onSelectNone}
-            className="rounded-full border border-zinc-300 bg-zinc-100 px-2 py-0.5 text-[11px] font-medium text-zinc-600 transition-colors hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1"
+            className="rounded-full border border-theme-primary bg-theme-secondary px-2 py-0.5 text-[11px] font-medium text-theme-secondary transition-colors hover:border-theme-secondary hover:bg-theme-hover hover:text-theme-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 print:border-zinc-200 print:bg-zinc-100 print:text-zinc-700"
           >
             None
           </button>
@@ -191,11 +191,11 @@ function JobFilterChips({
                 className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 focus-visible:ring-offset-1 ${
                   isSelected
                     ? 'border-amber-500 bg-amber-500 text-zinc-900 hover:border-amber-400 hover:bg-amber-400'
-                    : 'border-zinc-300 bg-zinc-100 text-zinc-600 hover:border-zinc-400 hover:bg-zinc-200 hover:text-zinc-800'
+                    : 'border-theme-primary bg-theme-secondary text-theme-secondary hover:border-theme-secondary hover:bg-theme-hover hover:text-theme-primary print:border-zinc-200 print:bg-zinc-100 print:text-zinc-700'
                 }`}
               >
                 <span>{job.label}</span>
-                <span className={`text-[10px] font-medium ${isSelected ? 'text-zinc-900/90' : 'text-zinc-500'}`}>
+                <span className={`text-[10px] font-medium ${isSelected ? 'text-zinc-900/90' : 'text-theme-muted print:text-zinc-500'}`}>
                   ({job.count})
                 </span>
               </button>
@@ -218,7 +218,7 @@ function ReportsToolbar({
   onDownload,
 }: ReportsToolbarProps) {
   return (
-    <div className="reports-page-toolbar sticky top-0 z-20 border-b border-theme-primary bg-theme-secondary rounded-t-2xl">
+    <div className="reports-page-toolbar sticky top-0 z-20 rounded-t-2xl border-b border-theme-primary bg-theme-secondary print:static print:border-zinc-200 print:bg-white">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between px-5 py-3">
         <div className="flex flex-wrap items-center gap-3">
           <h2 className="text-base font-bold text-theme-primary">Reports</h2>
@@ -233,8 +233,8 @@ function ReportsToolbar({
                   onClick={() => onChangeReport(opt.id)}
                   className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold transition-colors ${
                     activeReport === opt.id
-                      ? 'bg-white text-zinc-900 shadow-sm'
-                      : 'text-theme-secondary hover:text-theme-primary'
+                      ? 'bg-theme-primary text-theme-primary shadow-sm print:bg-zinc-100 print:text-zinc-900'
+                      : 'text-theme-secondary hover:bg-theme-hover hover:text-theme-primary'
                   }`}
                   title={opt.description}
                 >
@@ -589,8 +589,8 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
     : formatShortDate(reportDate);
 
   return (
-    <div className="w-full">
-      <div className="rounded-2xl border border-theme-primary bg-theme-secondary">
+    <div className="w-full text-theme-primary print:text-black">
+      <div className="rounded-2xl border border-theme-primary bg-theme-secondary shadow-[0_18px_40px_rgba(0,0,0,0.18)] print:border-zinc-200 print:bg-white print:shadow-none">
         <ReportsToolbar
           activeReport={activeReport}
           onChangeReport={setActiveReport}
@@ -612,7 +612,7 @@ export function ReportsPageContent({ initialView, initialDate }: ReportsPageCont
           />
         )}
 
-        <div className="reports-page-content bg-white px-5 py-6 rounded-b-2xl">
+        <div className="reports-page-content rounded-b-2xl bg-theme-primary px-5 py-6 text-theme-primary print:bg-white print:text-black">
         {activeReport === 'roster' && (
           <DailyRosterReport
             date={reportDate}

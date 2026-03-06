@@ -32,6 +32,7 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     viewMode,
     selectedEmployeeIds,
     employees,
+    shifts,
     coreHours,
     scheduleViewSettings,
     getShiftsForRestaurant,
@@ -42,10 +43,6 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
     () => (activeRestaurantId ? employees.filter((e) => e.restaurantId === activeRestaurantId) : []),
     [employees, activeRestaurantId],
   );
-  const scopedShifts = useMemo(
-    () => (activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : []),
-    [activeRestaurantId, getShiftsForRestaurant],
-  );
   const activeEmployees = useMemo(() => scopedEmployees.filter((e) => e.isActive), [scopedEmployees]);
 
   const role = getUserRole(currentUser?.role);
@@ -53,7 +50,7 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
 
   const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
   const weekDates = useMemo(() => getWeekDates(selectedDate, weekStartDay), [selectedDate, weekStartDay]);
-  const dayString = selectedDate.toISOString().split('T')[0];
+  const dayString = dateToString(selectedDate);
   const weekStart = dateToString(weekDates[0]);
   const weekEnd = dateToString(weekDates[6]);
   const monthStartDate = new Date(selectedDate.getFullYear(), selectedDate.getMonth(), 1);
@@ -66,6 +63,8 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
   const myEmployeeId = isEmployee ? currentUser?.id ?? null : null;
 
   const relevantShifts = useMemo(() => {
+    const scopedShifts = activeRestaurantId ? getShiftsForRestaurant(activeRestaurantId) : [];
+    void shifts;
     return scopedShifts.filter((shift) => {
       if (shift.isBlocked) return false;
       const inRange =
@@ -82,7 +81,17 @@ export function StatsFooter({ compact = false }: StatsFooterProps) {
       }
       return selectedEmployeeIds.includes(shift.employeeId);
     });
-  }, [scopedShifts, rangeStart, rangeEnd, viewMode, isEmployee, myEmployeeId, selectedEmployeeIds]);
+  }, [
+    activeRestaurantId,
+    getShiftsForRestaurant,
+    isEmployee,
+    myEmployeeId,
+    rangeEnd,
+    rangeStart,
+    selectedEmployeeIds,
+    shifts,
+    viewMode,
+  ]);
 
   const totalHours = useMemo(
     () => relevantShifts.reduce((sum, shift) => sum + (shift.endHour - shift.startHour), 0),

@@ -8,6 +8,7 @@ import { timeRangesOverlap } from '../utils/timeUtils';
 import { getUserRole, isManagerRole } from '../utils/role';
 import { useDemoContext } from '../demo/DemoProvider';
 import { useRestaurantEmployees } from '../hooks/useRestaurantEmployees';
+import { useRestaurantLocations } from '../hooks/useRestaurantLocations';
 
 type ShiftModalData = {
   id?: string;
@@ -59,7 +60,6 @@ export function AddShiftModal() {
     modalType, 
     modalData, 
     closeModal, 
-    locations,
     addShift, 
     updateShift,
     deleteShift,
@@ -99,6 +99,10 @@ export function AddShiftModal() {
     data: employees = [],
     isLoading,
   } = useRestaurantEmployees(scopedRestaurantId);
+  const {
+    options: locationOptions,
+    isLoading: isLocationsLoading,
+  } = useRestaurantLocations(scopedRestaurantId);
   const schedulerEmployees = useMemo(
     () => employees,
     [employees],
@@ -136,6 +140,12 @@ export function AddShiftModal() {
       : '';
   const hasEligibleJobs = jobsForEmployee.length > 0;
   const isJobEligible = effectiveJob ? jobsForEmployee.includes(effectiveJob) : false;
+  const effectiveLocationId = locationOptions.some((option) => option.id === locationId) ? locationId : '';
+  const locationPlaceholder = !scopedRestaurantId
+    ? 'Select a restaurant first'
+    : isLocationsLoading
+      ? 'Loading locations...'
+      : 'No location';
   const isEmployeeListEmpty = !isLoading && employeeOptions.length === 0;
   const openDropRequestForShift =
     isEditing && shiftModalData?.id
@@ -250,7 +260,7 @@ export function AddShiftModal() {
       allowBlockedOverride = true;
     }
 
-    const normalizedLocationId = locationId || null;
+    const normalizedLocationId = effectiveLocationId || null;
 
     if (isEditing && shiftModalData?.id) {
       const result = await updateShift(
@@ -412,18 +422,23 @@ export function AddShiftModal() {
         <div>
           <label className="block text-sm font-medium text-theme-secondary mb-1.5">Location (optional)</label>
           <select
-            value={locationId}
+            value={effectiveLocationId}
             onChange={(e) => setLocationId(e.target.value)}
             className="w-full px-3 py-2 bg-theme-tertiary border border-theme-primary rounded-lg text-theme-primary focus:outline-none focus:ring-2 focus:ring-amber-500/50"
-            disabled={!isManager}
+            disabled={!isManager || isLocationsLoading || !scopedRestaurantId}
           >
-            <option value="">No location</option>
-            {locations.map((location) => (
+            <option value="">{locationPlaceholder}</option>
+            {locationOptions.map((location) => (
               <option key={location.id} value={location.id}>
-                {location.name}
+                {location.label}
               </option>
             ))}
           </select>
+          {!isLocationsLoading && scopedRestaurantId && locationOptions.length === 0 && (
+            <p className="mt-1 text-xs text-theme-muted">
+              No saved locations yet. Add one in Schedule Settings.
+            </p>
+          )}
         </div>
 
         <div className="grid grid-cols-2 gap-4">

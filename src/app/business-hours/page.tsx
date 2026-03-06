@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
@@ -8,6 +9,8 @@ import { getUserRole, isManagerRole } from '../../utils/role';
 import { apiFetch } from '../../lib/apiClient';
 import { ScheduleHourMode } from '../../types';
 import { HoursRangeSection, type HourRow } from '../../components/HoursRangeSection';
+import { useRestaurantLocations } from '../../hooks/useRestaurantLocations';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 
 const readString = (value: unknown, fallback = ''): string => {
   if (typeof value === 'string') return value;
@@ -29,6 +32,9 @@ const buildDefaultRows = () =>
     enabled: true,
   }));
 
+const getErrorMessage = (error: unknown, fallback: string) =>
+  error instanceof Error ? error.message || fallback : fallback;
+
 export default function BusinessHoursPage() {
   const router = useRouter();
   const {
@@ -40,11 +46,24 @@ export default function BusinessHoursPage() {
     setScheduleViewSettings,
   } = useScheduleStore();
   const { currentUser, isInitialized, activeRestaurantId, init } = useAuthStore();
+  const {
+    locations: restaurantLocations,
+    isLoading: locationsLoading,
+    error: locationsError,
+    addLocation,
+    deleteLocation,
+    isAdding: isAddingLocation,
+    isDeleting: isDeletingLocation,
+  } = useRestaurantLocations(activeRestaurantId);
 
   const [rows, setRows] = useState<HourRow[]>([]);
   const [coreRows, setCoreRows] = useState<HourRow[]>([]);
   const [saving, setSaving] = useState(false);
   const [savingCore, setSavingCore] = useState(false);
+  const [newLocationName, setNewLocationName] = useState('');
+  const [locationsMessage, setLocationsMessage] = useState<string | null>(null);
+  const [locationActionId, setLocationActionId] = useState<string | null>(null);
+  const [locationPendingDelete, setLocationPendingDelete] = useState<{ id: string; name: string } | null>(null);
 
   // Schedule View Settings state
   const [hourMode, setHourMode] = useState<ScheduleHourMode>('full24');
@@ -439,6 +458,69 @@ export default function BusinessHoursPage() {
     }
   };
 
+  const handleAddLocation = async () => {
+    if (!activeRestaurantId) {
+      const message = 'Select a restaurant to manage locations.';
+      setLocationsMessage(message);
+      showToast(message, 'error');
+      return;
+    }
+    const trimmedName = newLocationName.trim();
+    if (!trimmedName) {
+      const message = 'Location name is required.';
+      setLocationsMessage(message);
+      showToast(message, 'error');
+      return;
+    }
+
+    try {
+      setLocationsMessage(null);
+      await addLocation({ name: trimmedName, restaurantId: activeRestaurantId });
+      setNewLocationName('');
+      showToast('Location added.', 'success');
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to add location.');
+      setLocationsMessage(message);
+      showToast(message, 'error');
+    }
+  };
+
+  const handleDeleteLocation = async (locationId: string, locationName: string) => {
+    if (!activeRestaurantId) {
+      const message = 'Select a restaurant to manage locations.';
+      setLocationsMessage(message);
+      showToast(message, 'error');
+      return;
+    }
+    setLocationPendingDelete({ id: locationId, name: locationName });
+  };
+
+  const handleConfirmDeleteLocation = async () => {
+    if (!activeRestaurantId || !locationPendingDelete) {
+      return;
+    }
+
+    setLocationActionId(locationPendingDelete.id);
+    try {
+      setLocationsMessage(null);
+      await deleteLocation(locationPendingDelete.id);
+      showToast('Location removed.', 'success');
+      setLocationPendingDelete(null);
+    } catch (error) {
+      const message = getErrorMessage(error, 'Unable to remove location.');
+      setLocationsMessage(message);
+      showToast(message, 'error');
+    } finally {
+      setLocationActionId(null);
+    }
+  };
+
+  const trimmedNewLocationName = newLocationName.trim();
+  const locationGuardMessage = !activeRestaurantId ? 'Select a restaurant to manage locations.' : null;
+  const locationLoadMessage = locationsError ? getErrorMessage(locationsError, 'Unable to load locations.') : null;
+  const locationInlineMessage = locationGuardMessage ?? locationsMessage ?? locationLoadMessage;
+  const canAddLocation = Boolean(activeRestaurantId) && trimmedNewLocationName.length > 0 && !isAddingLocation;
+
   if (!isInitialized || !currentUser || !isManager) {
     return (
       <div className="min-h-screen bg-theme-primary flex items-center justify-center">
@@ -600,6 +682,17 @@ export default function BusinessHoursPage() {
           </div>
 
           <HoursRangeSection
+            title="Core Hours"
+            description="Define the core coverage window for each day."
+            helperText="Used to calculate schedule coverage in the footer."
+            rows={coreRows}
+            setRows={setCoreRows}
+            onSave={handleSaveCore}
+            saving={savingCore}
+            saveLabel="Save Core Hours"
+          />
+
+          <HoursRangeSection
             title="Business Hours"
             description="Configure open hours for each day of the week."
             helperText="Controls the highlighted business-hours region on the schedule."
@@ -610,16 +703,97 @@ export default function BusinessHoursPage() {
             saveLabel="Save Business Hours"
           />
 
-          <HoursRangeSection
-            title="Core Hours"
-            description="Define the core coverage window for each day."
-            helperText="Used to calculate schedule coverage in the footer."
-            rows={coreRows}
-            setRows={setCoreRows}
-            onSave={handleSaveCore}
-            saving={savingCore}
-            saveLabel="Save Core Hours"
-          />
+          {/* Locations Section */}
+          <div className="rounded-3xl border border-theme-primary bg-theme-secondary p-5 shadow-[0_18px_50px_rgba(0,0,0,0.18)] space-y-4">
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-theme-primary">Locations</h2>
+              <p className="text-sm text-theme-tertiary">
+                Manage the location list used by Add/Edit Shift. Changes appear immediately in the shift form.
+              </p>
+            </div>
+
+            {locationInlineMessage && (
+              <p
+                className={`rounded-2xl border px-3 py-2 text-sm ${
+                  locationGuardMessage
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                    : 'border-red-500/30 bg-red-500/10 text-red-400'
+                }`}
+              >
+                {locationInlineMessage}
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={newLocationName}
+                onChange={(event) => {
+                  setNewLocationName(event.target.value);
+                  if (locationsMessage) {
+                    setLocationsMessage(null);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleAddLocation();
+                  }
+                }}
+                placeholder="Add location name"
+                disabled={!activeRestaurantId || isAddingLocation}
+                className="flex-1 rounded-2xl border border-theme-primary bg-theme-tertiary px-4 py-3 text-sm text-theme-primary focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  void handleAddLocation();
+                }}
+                disabled={!canAddLocation}
+                className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isAddingLocation ? 'Adding...' : 'Add'}
+              </button>
+            </div>
+
+            <div className="mt-1">
+              {locationsLoading ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">Loading locations...</p>
+              ) : locationLoadMessage ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">Unable to load locations right now.</p>
+              ) : restaurantLocations.length === 0 ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">No locations yet.</p>
+              ) : (
+                <ul className="mt-4 space-y-2">
+                  {restaurantLocations.map((location) => {
+                    const isBusy = locationActionId === location.id && isDeletingLocation;
+                    return (
+                      <li
+                        key={location.id}
+                        className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 transition-colors hover:bg-white/[0.05]"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                          <span className="text-sm font-medium text-theme-primary">{location.name}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleDeleteLocation(location.id, location.name);
+                          }}
+                          disabled={isBusy}
+                          aria-label={`Delete ${location.name}`}
+                          className="rounded-md p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -628,6 +802,25 @@ export default function BusinessHoursPage() {
           background: transparent !important;
         }
       `}</style>
+      <ConfirmDialog
+        open={Boolean(locationPendingDelete)}
+        title="Remove location?"
+        description={
+          locationPendingDelete
+            ? `Remove "${locationPendingDelete.name}" from active locations? This will only remove it from the location list used by Add/Edit Shift.`
+            : undefined
+        }
+        confirmText="Remove"
+        cancelText="Cancel"
+        loadingText="Removing..."
+        variant="danger"
+        isLoading={Boolean(locationPendingDelete) && locationActionId === locationPendingDelete?.id && isDeletingLocation}
+        onCancel={() => {
+          if (isDeletingLocation) return;
+          setLocationPendingDelete(null);
+        }}
+        onConfirm={handleConfirmDeleteLocation}
+      />
     </div>
   );
 }

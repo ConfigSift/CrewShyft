@@ -106,7 +106,7 @@ export function DailyRosterReport({
   };
 
   return (
-    <div className="report-roster-root">
+    <div className="report-roster-root text-theme-primary print:text-black">
       <ReportHeader
         title="Daily Roster"
         subtitle={formatReportDate(date)}
@@ -141,14 +141,14 @@ export function DailyRosterReport({
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             {/* AM Column */}
             <div className="space-y-4">
-              <div className="text-center text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              <div className="text-center text-xs font-semibold uppercase tracking-wide text-theme-secondary print:text-zinc-500">
                 AM Shift
               </div>
               {amGroups.length === 0 && (
-                <p className="text-[11px] text-zinc-400 px-2 py-2">No AM shifts</p>
+                <p className="px-2 py-2 text-[11px] text-theme-muted print:text-zinc-400">No AM shifts</p>
               )}
               {amGroups.map((group) => (
-                <div key={group.job} className="border border-zinc-200/70 rounded-xl overflow-hidden bg-white">
+                <div key={group.job} className="overflow-hidden rounded-xl border border-theme-primary bg-theme-secondary print:border-zinc-200 print:bg-white">
                   <div
                     className="flex items-center justify-between px-3 py-2 text-[11px] font-semibold uppercase tracking-wide"
                     style={{
@@ -159,21 +159,21 @@ export function DailyRosterReport({
                   >
                     <span>{group.job} ({group.entries.length})</span>
                   </div>
-                  <div className="divide-y divide-zinc-100">
+                  <div className="divide-y divide-theme-primary print:divide-zinc-100">
                     {group.entries.map((entry) => (
                       <div
                         key={entry.shift.id}
                         className="grid items-center gap-3 px-3 py-2 text-[11px]"
                         style={{ gridTemplateColumns: 'minmax(0,1fr) 140px 90px' }}
                       >
-                        <span className="font-semibold text-zinc-900 truncate">
+                        <span className="truncate font-semibold text-theme-primary print:text-zinc-900">
                           {entry.employee.name}
                           {entry.isDouble && <span className="text-amber-500 font-bold text-[12px] ml-1">*</span>}
                         </span>
-                        <span className="text-zinc-500 text-center tabular-nums">
+                        <span className="text-center tabular-nums text-theme-secondary print:text-zinc-500">
                           {formatPhone(entry.employee)}
                         </span>
-                        <span className="font-medium text-zinc-700 text-right tabular-nums">
+                        <span className="text-right font-medium tabular-nums text-theme-secondary print:text-zinc-700">
                           {formatTimeLabel(entry.shift.startHour)}
                         </span>
                       </div>
@@ -185,14 +185,14 @@ export function DailyRosterReport({
 
             {/* PM Column */}
             <div className="space-y-4">
-              <div className="text-center text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              <div className="text-center text-xs font-semibold uppercase tracking-wide text-theme-secondary print:text-zinc-500">
                 PM Shift
               </div>
               {pmGroups.length === 0 && (
-                <p className="text-[11px] text-zinc-400 px-2 py-2">No PM shifts</p>
+                <p className="px-2 py-2 text-[11px] text-theme-muted print:text-zinc-400">No PM shifts</p>
               )}
               {pmGroups.map((group) => (
-                <div key={group.job} className="border border-zinc-200/70 rounded-xl overflow-hidden bg-white">
+                <div key={group.job} className="overflow-hidden rounded-xl border border-theme-primary bg-theme-secondary print:border-zinc-200 print:bg-white">
                   <div
                     className="flex items-center justify-between px-3 py-2 text-[11px] font-semibold uppercase tracking-wide"
                     style={{
@@ -203,21 +203,21 @@ export function DailyRosterReport({
                   >
                     <span>{group.job} ({group.entries.length})</span>
                   </div>
-                  <div className="divide-y divide-zinc-100">
+                  <div className="divide-y divide-theme-primary print:divide-zinc-100">
                     {group.entries.map((entry) => (
                       <div
                         key={entry.shift.id}
                         className="grid items-center gap-3 px-3 py-2 text-[11px]"
                         style={{ gridTemplateColumns: 'minmax(0,1fr) 140px 90px' }}
                       >
-                        <span className="font-semibold text-zinc-900 truncate">
+                        <span className="truncate font-semibold text-theme-primary print:text-zinc-900">
                           {entry.employee.name}
                           {entry.isDouble && <span className="text-amber-500 font-bold text-[12px] ml-1">*</span>}
                         </span>
-                        <span className="text-zinc-500 text-center tabular-nums">
+                        <span className="text-center tabular-nums text-theme-secondary print:text-zinc-500">
                           {formatPhone(entry.employee)}
                         </span>
-                        <span className="font-medium text-zinc-700 text-right tabular-nums">
+                        <span className="text-right font-medium tabular-nums text-theme-secondary print:text-zinc-700">
                           {formatTimeLabel(entry.shift.startHour)}
                         </span>
                       </div>
@@ -231,7 +231,7 @@ export function DailyRosterReport({
       </div>
 
       {/* Footer */}
-      <div className="report-footer flex flex-wrap items-center gap-x-4 gap-y-1 pt-4 mt-4 border-t border-zinc-200 text-[10px] text-zinc-500">
+      <div className="report-footer mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-theme-primary pt-4 text-[10px] text-theme-secondary print:border-zinc-200 print:text-zinc-500">
         <div className="footer-meta">Generated {formatReportTimestamp()}</div>
       </div>
     </div>

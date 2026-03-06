@@ -23,7 +23,7 @@ export default function ReportsPage({
   const initialDate = startParam ?? dateParam;
 
   return (
-    <div className="w-full">
+    <div className="w-full bg-theme-primary text-theme-primary print:bg-white print:text-black">
       <div className="mx-auto w-full max-w-[1100px] p-6">
         <ReportsPageContent initialView={initialView} initialDate={initialDate} />
       </div>

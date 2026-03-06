@@ -35,29 +35,29 @@ export function ReportHeader({
   const initials = getInitials(restaurantName);
 
   return (
-    <div className="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-200 pb-4 mb-4">
+    <div className="mb-4 flex flex-wrap items-start justify-between gap-4 border-b border-theme-primary pb-4 print:border-zinc-200">
       <div className="flex items-center gap-3 min-w-[200px]">
-        <div className="w-9 h-9 rounded-full bg-amber-100 text-amber-700 flex items-center justify-center text-xs font-bold">
+        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-amber-500/15 text-xs font-bold text-amber-400 print:bg-amber-100 print:text-amber-700">
           {initials}
         </div>
         <div className="min-w-0">
-          <div className="text-[10px] uppercase tracking-[0.2em] text-zinc-400 truncate">
+          <div className="truncate text-[10px] uppercase tracking-[0.2em] text-theme-muted print:text-zinc-400">
             {restaurantName}
           </div>
-          <div className="text-sm font-semibold text-zinc-900">{title}</div>
-          <div className="text-xs text-zinc-500">{subtitle}</div>
+          <div className="text-sm font-semibold text-theme-primary print:text-zinc-900">{title}</div>
+          <div className="text-xs text-theme-secondary print:text-zinc-500">{subtitle}</div>
         </div>
       </div>
 
       {stats && stats.length > 0 && (
-        <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2">
+        <div className="rounded-xl border border-theme-primary bg-theme-secondary px-3 py-2 print:border-zinc-200 print:bg-zinc-50">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-x-5 gap-y-2">
             {stats.map((stat) => (
               <div key={stat.label} className="min-w-[86px]">
-                <div className="text-[9px] uppercase tracking-[0.18em] text-zinc-400">
+                <div className="text-[9px] uppercase tracking-[0.18em] text-theme-muted print:text-zinc-400">
                   {stat.label}
                 </div>
-                <div className="text-base font-bold text-zinc-900 leading-tight">{stat.value}</div>
+                <div className="text-base font-bold leading-tight text-theme-primary print:text-zinc-900">{stat.value}</div>
               </div>
             ))}
           </div>

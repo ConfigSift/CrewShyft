@@ -154,7 +154,7 @@ export function ScheduleToolbar({
   );
 
   return (
-    <div className="shrink-0 border-b border-theme-primary bg-theme-secondary/95 backdrop-blur px-2 sm:px-4 py-2 sm:h-14 overflow-x-auto">
+    <div className="shrink-0 border-b border-theme-primary bg-theme-secondary px-2 sm:px-4 py-2 sm:h-14 overflow-x-auto">
       <div className="grid grid-cols-[140px_minmax(0,1fr)_320px] items-center gap-2 min-w-max">
         <div className="flex items-center gap-2">
           {showPublish ? (
