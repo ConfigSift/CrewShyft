@@ -3,7 +3,7 @@
 import { useScheduleStore } from '../store/scheduleStore';
 import { useAuthStore } from '../store/authStore';
 import { useUIStore } from '../store/uiStore';
-import { Users, ChevronDown, Check, Eye, EyeOff, User, X, ChevronLeft, ChevronRight, CalendarCheck } from 'lucide-react';
+import { Users, ChevronDown, Check, User, X, ChevronLeft, ChevronRight, CalendarCheck } from 'lucide-react';
 import { useMemo, useState, useEffect, useCallback } from 'react';
 import { getJobColorClasses } from '../lib/jobColors';
 import { StaffProfileModal } from './StaffProfileModal';
@@ -21,11 +21,10 @@ export function StaffSidebar() {
     selectedEmployeeIds,
     toggleEmployee,
     setSelectedEmployeeIds,
-    selectAllEmployeesForRestaurant,
-    deselectAllEmployees,
     getShiftsForRestaurant,
     loadRestaurantData,
     selectedDate,
+    viewMode,
     workingTodayOnly,
     toggleWorkingTodayOnly,
     showToast,
@@ -184,18 +183,45 @@ export function StaffSidebar() {
     return `${safe}h`;
   };
 
-  // Search filter: only affects visible employees in the sidebar
-  // Group toggles operate on VISIBLE employees only (what you see is what you toggle)
-  // "Show All" / "Hide All" operates on ALL employees regardless of search filter
+  const visibleRange = useMemo(() => {
+    const weekStartDay = scheduleViewSettings?.weekStartDay ?? 'sunday';
+    if (viewMode === 'week') {
+      const weekDates = getWeekDates(selectedDate, weekStartDay);
+      return {
+        start: `${weekDates[0].getFullYear()}-${String(weekDates[0].getMonth() + 1).padStart(2, '0')}-${String(weekDates[0].getDate()).padStart(2, '0')}`,
+        end: `${weekDates[6].getFullYear()}-${String(weekDates[6].getMonth() + 1).padStart(2, '0')}-${String(weekDates[6].getDate()).padStart(2, '0')}`,
+      };
+    }
+    return { start: dateString, end: dateString };
+  }, [dateString, selectedDate, scheduleViewSettings?.weekStartDay, viewMode]);
+
+  const scheduledEmployeeIds = useMemo(() => {
+    const ids = new Set<string>();
+    scopedShifts.forEach((shift) => {
+      if (shift.isBlocked) return;
+      if (shift.date < visibleRange.start || shift.date > visibleRange.end) return;
+      ids.add(shift.employeeId);
+    });
+    return ids;
+  }, [scopedShifts, visibleRange.end, visibleRange.start]);
+
+  // Search filter only affects visible employees in the sidebar.
+  // Group toggles operate on visible employees only.
   const filteredEmployees = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    if (!query) return scopedEmployees;
-    return scopedEmployees.filter((emp) =>
+    let nextEmployees = scopedEmployees;
+    if (query) {
+      nextEmployees = nextEmployees.filter((emp) =>
       emp.name.toLowerCase().includes(query)
         || emp.email?.toLowerCase().includes(query)
         || emp.phone?.toLowerCase().includes(query)
-    );
-  }, [scopedEmployees, searchQuery]);
+      );
+    }
+    if (workingTodayOnly) {
+      nextEmployees = nextEmployees.filter((emp) => scheduledEmployeeIds.has(emp.id));
+    }
+    return nextEmployees;
+  }, [scopedEmployees, scheduledEmployeeIds, searchQuery, workingTodayOnly]);
 
   // Group employees by job title for sidebar display
   // Uses filteredEmployees so groups only contain visible (search-matched) employees
@@ -218,26 +244,14 @@ export function StaffSidebar() {
     return map;
   }, [filteredEmployees]);
 
-  const shiftsForDateMap = useMemo(() => {
-    const map = new Set<string>();
-    scopedShifts.forEach(s => {
-      if (s.date === dateString && !s.isBlocked) {
-        map.add(s.employeeId);
-      }
-    });
-    return map;
-  }, [scopedShifts, dateString]);
-
-  const hasShiftToday = useCallback((employeeId: string) => {
-    return shiftsForDateMap.has(employeeId);
-  }, [shiftsForDateMap]);
+  const hasScheduledShiftInRange = useCallback((employeeId: string) => {
+    return scheduledEmployeeIds.has(employeeId);
+  }, [scheduledEmployeeIds]);
 
   const activeEmployees = useMemo(() => 
     scopedEmployees.filter((e) => e.isActive),
     [scopedEmployees]
   );
-  
-  const allSelected = selectedEmployeeIds.length === activeEmployees.length && activeEmployees.length > 0;
 
   const isSectionFullySelected = useCallback((group: string) => {
     const sectionEmps = employeesByJob[group] || [];
@@ -272,14 +286,6 @@ export function StaffSidebar() {
     }
     setSelectedEmployeeIds(newSelectedIds);
   }, [employeesByJob, selectedEmployeeIds, setSelectedEmployeeIds]);
-
-  const handleSelectAll = useCallback(() => {
-    if (allSelected) {
-      deselectAllEmployees();
-    } else {
-      selectAllEmployeesForRestaurant(activeRestaurantId);
-    }
-  }, [allSelected, deselectAllEmployees, selectAllEmployeesForRestaurant, activeRestaurantId]);
 
   const openProfileForEmployee = useCallback(async (employeeId: string) => {
     if (demo?.isDemo) {
@@ -348,17 +354,6 @@ export function StaffSidebar() {
             </button>
           </div>
         </div>
-
-        <div className="flex gap-2 mt-2">
-          <button
-            onClick={handleSelectAll}
-            className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg bg-theme-tertiary text-theme-tertiary hover:text-theme-primary hover:bg-theme-hover transition-colors text-[11px] font-semibold min-h-[32px]"
-          >
-            {allSelected ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
-            {allSelected ? 'Hide All' : 'Show All'}
-          </button>
-        </div>
-
         {/* Working Today filter toggle */}
         <button
           onClick={toggleWorkingTodayOnly}
@@ -367,7 +362,7 @@ export function StaffSidebar() {
               ? 'bg-amber-500/15 text-amber-500 hover:bg-amber-500/25'
               : 'bg-theme-tertiary text-theme-muted hover:text-theme-secondary hover:bg-theme-hover'
           }`}
-          title="Hide staff with no shifts on the selected day"
+          title={viewMode === 'week' ? 'Hide staff with no shifts in the visible week' : 'Hide staff with no shifts on the selected day'}
           aria-pressed={workingTodayOnly}
         >
           <span className="flex items-center gap-1.5">
@@ -428,7 +423,7 @@ export function StaffSidebar() {
             const isFullySelected = isSectionFullySelected(job);
             const isPartiallySelected = isSectionPartiallySelected(job);
             // Count employees scheduled (have shift) on the selected date
-            const scheduledCount = jobEmployees.filter((e) => shiftsForDateMap.has(e.id)).length;
+            const scheduledCount = jobEmployees.filter((e) => scheduledEmployeeIds.has(e.id)).length;
             const jobColor = getJobColorClasses(job);
 
             return (
@@ -485,7 +480,7 @@ export function StaffSidebar() {
                   <div className="ml-1.5 space-y-0.5 mt-0.5">
                     {jobEmployees.map((employee) => {
                       const isSelected = selectedEmployeeIds.includes(employee.id);
-                      const hasShift = hasShiftToday(employee.id);
+                      const hasShift = hasScheduledShiftInRange(employee.id);
 
                       return (
                         <div
