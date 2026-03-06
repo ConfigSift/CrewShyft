@@ -650,6 +650,109 @@ export default function BusinessHoursPage() {
             </div>
           </div>
 
+          <HoursRangeSection
+            title="Business Hours"
+            description="Configure open hours for each day of the week."
+            helperText="Controls the highlighted business-hours region on the schedule."
+            rows={rows}
+            setRows={setRows}
+            onSave={handleSave}
+            saving={saving}
+            saveLabel="Save Business Hours"
+          />
+
+          {/* Locations Section */}
+          <div className="rounded-3xl border border-theme-primary bg-theme-secondary p-5 shadow-[0_18px_50px_rgba(0,0,0,0.18)] space-y-4">
+            <div className="space-y-1">
+              <h2 className="text-lg font-semibold text-theme-primary">Locations</h2>
+              <p className="text-sm text-theme-tertiary">
+                Manage the location list used by Add/Edit Shift. Changes appear immediately in the shift form.
+              </p>
+            </div>
+
+            {locationInlineMessage && (
+              <p
+                className={`rounded-2xl border px-3 py-2 text-sm ${
+                  locationGuardMessage
+                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                    : 'border-red-500/30 bg-red-500/10 text-red-400'
+                }`}
+              >
+                {locationInlineMessage}
+              </p>
+            )}
+
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={newLocationName}
+                onChange={(event) => {
+                  setNewLocationName(event.target.value);
+                  if (locationsMessage) {
+                    setLocationsMessage(null);
+                  }
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    void handleAddLocation();
+                  }
+                }}
+                placeholder="Add location name"
+                disabled={!activeRestaurantId || isAddingLocation}
+                className="flex-1 rounded-2xl border border-theme-primary bg-theme-tertiary px-4 py-3 text-sm text-theme-primary focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  void handleAddLocation();
+                }}
+                disabled={!canAddLocation}
+                className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {isAddingLocation ? 'Adding...' : 'Add'}
+              </button>
+            </div>
+
+            <div className="mt-1">
+              {locationsLoading ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">Loading locations...</p>
+              ) : locationLoadMessage ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">Unable to load locations right now.</p>
+              ) : restaurantLocations.length === 0 ? (
+                <p className="px-4 py-4 text-sm text-theme-muted">No locations yet.</p>
+              ) : (
+                <ul className="mt-4 space-y-2">
+                  {restaurantLocations.map((location) => {
+                    const isBusy = locationActionId === location.id && isDeletingLocation;
+                    return (
+                      <li
+                        key={location.id}
+                        className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 transition-colors hover:bg-white/[0.05]"
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden="true" />
+                          <span className="text-sm font-medium text-theme-primary">{location.name}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            void handleDeleteLocation(location.id, location.name);
+                          }}
+                          disabled={isBusy}
+                          aria-label={`Delete ${location.name}`}
+                          className="rounded-md p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <X className="h-4 w-4" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
+          </div>
+
           {/* Minimum Staffing / Coverage Section */}
           <div className="bg-theme-secondary border border-theme-primary rounded-2xl p-3 space-y-3 md:col-span-2">
             <div className="flex items-start justify-between gap-4">
@@ -823,109 +926,6 @@ export default function BusinessHoursPage() {
               >
                 {savingCoverage ? 'Saving...' : 'Save Coverage Settings'}
               </button>
-            </div>
-          </div>
-
-          <HoursRangeSection
-            title="Business Hours"
-            description="Configure open hours for each day of the week."
-            helperText="Controls the highlighted business-hours region on the schedule."
-            rows={rows}
-            setRows={setRows}
-            onSave={handleSave}
-            saving={saving}
-            saveLabel="Save Business Hours"
-          />
-
-          {/* Locations Section */}
-          <div className="rounded-3xl border border-theme-primary bg-theme-secondary p-5 shadow-[0_18px_50px_rgba(0,0,0,0.18)] space-y-4">
-            <div className="space-y-1">
-              <h2 className="text-lg font-semibold text-theme-primary">Locations</h2>
-              <p className="text-sm text-theme-tertiary">
-                Manage the location list used by Add/Edit Shift. Changes appear immediately in the shift form.
-              </p>
-            </div>
-
-            {locationInlineMessage && (
-              <p
-                className={`rounded-2xl border px-3 py-2 text-sm ${
-                  locationGuardMessage
-                    ? 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-                    : 'border-red-500/30 bg-red-500/10 text-red-400'
-                }`}
-              >
-                {locationInlineMessage}
-              </p>
-            )}
-
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <input
-                type="text"
-                value={newLocationName}
-                onChange={(event) => {
-                  setNewLocationName(event.target.value);
-                  if (locationsMessage) {
-                    setLocationsMessage(null);
-                  }
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault();
-                    void handleAddLocation();
-                  }
-                }}
-                placeholder="Add location name"
-                disabled={!activeRestaurantId || isAddingLocation}
-                className="flex-1 rounded-2xl border border-theme-primary bg-theme-tertiary px-4 py-3 text-sm text-theme-primary focus:outline-none focus:ring-2 focus:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  void handleAddLocation();
-                }}
-                disabled={!canAddLocation}
-                className="rounded-2xl bg-emerald-500 px-5 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                {isAddingLocation ? 'Adding...' : 'Add'}
-              </button>
-            </div>
-
-            <div className="mt-1">
-              {locationsLoading ? (
-                <p className="px-4 py-4 text-sm text-theme-muted">Loading locations...</p>
-              ) : locationLoadMessage ? (
-                <p className="px-4 py-4 text-sm text-theme-muted">Unable to load locations right now.</p>
-              ) : restaurantLocations.length === 0 ? (
-                <p className="px-4 py-4 text-sm text-theme-muted">No locations yet.</p>
-              ) : (
-                <ul className="mt-4 space-y-2">
-                  {restaurantLocations.map((location) => {
-                    const isBusy = locationActionId === location.id && isDeletingLocation;
-                    return (
-                      <li
-                        key={location.id}
-                        className="flex items-center justify-between rounded-xl border border-white/10 bg-white/[0.03] px-4 py-3 transition-colors hover:bg-white/[0.05]"
-                      >
-                        <div className="flex items-center gap-3">
-                          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" aria-hidden="true" />
-                          <span className="text-sm font-medium text-theme-primary">{location.name}</span>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void handleDeleteLocation(location.id, location.name);
-                          }}
-                          disabled={isBusy}
-                          aria-label={`Delete ${location.name}`}
-                          className="rounded-md p-2 text-white/40 transition-colors hover:bg-white/5 hover:text-white/70 disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <X className="h-4 w-4" />
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
             </div>
           </div>
         </div>

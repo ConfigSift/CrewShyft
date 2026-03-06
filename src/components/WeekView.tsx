@@ -2192,19 +2192,24 @@ export function WeekView() {
                 style={{ height: 'var(--weekCoverageH)', top: 'var(--weekHeaderH)' }}
               >
                 {scheduleViewSettings?.coverageEnabled ? (
-                  <button
-                    type="button"
-                    onClick={toggleWeekCoverageMode}
-                    className="border-r border-theme-primary/30 flex items-center gap-1 px-2 w-full h-full hover:bg-theme-hover/50 transition-colors cursor-pointer"
-                    title={weekCoverageMode === 'bars' ? 'Switch to staff count view' : 'Switch to coverage bars view'}
-                  >
-                    <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
-                      {weekCoverageMode === 'bars' ? 'Coverage' : 'Staff'}
-                    </span>
-                    <span className="text-theme-muted/50 shrink-0" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
-                      {weekCoverageMode === 'bars' ? '#' : '▐▐'}
-                    </span>
-                  </button>
+                  <div className="border-r border-theme-primary/30 flex items-center justify-center px-1.5 w-full h-full">
+                    <div className="flex items-center rounded-full bg-black/20 p-[2px] gap-[1px]">
+                      <button
+                        type="button"
+                        onClick={() => weekCoverageMode !== 'simple' && toggleWeekCoverageMode()}
+                        className={`rounded-full px-2 py-[2px] text-[8px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'simple' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
+                      >
+                        Staff
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => weekCoverageMode !== 'bars' && toggleWeekCoverageMode()}
+                        className={`rounded-full px-2 py-[2px] text-[8px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'bars' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
+                      >
+                        Cov
+                      </button>
+                    </div>
+                  </div>
                 ) : (
                   <div className="border-r border-theme-primary/30 flex items-center px-2 w-full h-full">
                     <span className="font-semibold text-theme-muted uppercase tracking-wide" style={{ fontSize: 'var(--weekCoverageTextSize)' }}>
