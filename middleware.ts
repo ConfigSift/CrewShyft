@@ -33,6 +33,7 @@ const APP_ROUTE_PREFIXES = [
 const PUBLIC_EXACT_PATHS = ['/'];
 const PUBLIC_PATH_PREFIXES = ['/login', '/signup', '/start', '/onboarding', '/setup', '/auth/callback', '/auth/error'];
 const AUTH_ENTRY_PATH_PREFIXES = ['/login', '/signup'];
+const INVITE_ALLOWED_PATH_PREFIXES = ['/auth/invite', '/set-password', '/login', '/signup', '/start', '/onboarding', '/setup', '/auth'];
 const RECOVERY_ALLOWED_PATH_PREFIXES = ['/auth/recovery', '/reset-password', '/login', '/signup', '/start', '/onboarding', '/setup', '/auth'];
 const PROTECTED_APP_ROUTE_PREFIXES = [
   '/admin',
@@ -149,6 +150,10 @@ function isPublicPath(pathname: string) {
 
 function isProtectedAppRoute(pathname: string) {
   return PROTECTED_APP_ROUTE_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
+}
+
+function isInviteAllowedPath(pathname: string) {
+  return INVITE_ALLOWED_PATH_PREFIXES.some((route) => pathMatchesPrefix(pathname, route));
 }
 
 function isRecoveryAllowedPath(pathname: string) {
@@ -298,10 +303,6 @@ async function runMiddleware(req: NextRequest) {
     }
   }
 
-  if (isPublicRoute && !isAuthEntryRoute) {
-    return NextResponse.next();
-  }
-
   const response = NextResponse.next();
   let routeForGuards = originalPathname;
   if (!localOrPreviewHost && host === APP_SUBDOMAIN && (originalPathname === '/' || originalPathname === '/schedule')) {
@@ -310,14 +311,28 @@ async function runMiddleware(req: NextRequest) {
 
   const protectedRoute = isProtectedAppRoute(routeForGuards);
   const authEntryForGuards = isAuthEntryPath(routeForGuards);
+  const inviteRequired = req.cookies.get('cs_invite_required')?.value === '1';
+  const inviteAllowedRoute = isInviteAllowedPath(routeForGuards);
   const recoveryRequired = req.cookies.get('cs_recovery_required')?.value === '1';
   const recoveryAllowedRoute = isRecoveryAllowedPath(routeForGuards);
+
+  if (inviteRequired) {
+    if (!inviteAllowedRoute) {
+      return createRedirect('/set-password', 'invite:required');
+    }
+
+    return response;
+  }
 
   if (recoveryRequired) {
     if (!recoveryAllowedRoute) {
       return createRedirect('/reset-password', 'recovery:required');
     }
 
+    return response;
+  }
+
+  if (isPublicRoute && !isAuthEntryRoute) {
     return response;
   }
 

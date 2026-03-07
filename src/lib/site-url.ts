@@ -3,7 +3,7 @@ function trimTrailingSlash(value: string) {
 }
 
 export function getSiteUrl() {
-  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  const configured = process.env.NEXT_PUBLIC_SITE_URL?.trim() || process.env.SITE_URL?.trim();
   if (configured) {
     return trimTrailingSlash(configured);
   }

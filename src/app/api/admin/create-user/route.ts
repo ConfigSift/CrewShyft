@@ -6,7 +6,7 @@ import { normalizeJobs } from '@/utils/jobs';
 import { splitFullName } from '@/utils/userMapper';
 import { normalizeEmployeeNumber, validateEmployeeNumber } from '@/utils/employeeAuth';
 import { getAdminAuthApi } from '@/lib/supabase/adminAuth';
-import { getBaseUrls } from '@/lib/routing/getBaseUrls';
+import { getSiteUrl } from '@/lib/site-url';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -144,14 +144,8 @@ function isExistingAuthUserError(message: string) {
   );
 }
 
-function getStaffOnboardingRedirect(request: NextRequest) {
-  const forwardedHost = request.headers.get('x-forwarded-host') ?? request.headers.get('host') ?? '';
-  const forwardedProto = request.headers.get('x-forwarded-proto') ?? '';
-  const requestOrigin = forwardedHost
-    ? `${forwardedProto || 'https'}://${forwardedHost}`
-    : request.nextUrl.origin;
-  const { loginBaseUrl } = getBaseUrls(requestOrigin);
-  return `${loginBaseUrl}/reset-passcode`;
+function getStaffInviteRedirect() {
+  return `${getSiteUrl()}/auth/invite?next=/set-password`;
 }
 
 export async function POST(request: NextRequest) {
@@ -387,12 +381,12 @@ export async function POST(request: NextRequest) {
     let authUserIdToUse = existingAuthUserId;
     let invited = false;
     let action: CreateResponse['action'] = 'CREATED';
-    const onboardingRedirectTo = getStaffOnboardingRedirect(request);
+    const inviteRedirectTo = getStaffInviteRedirect();
 
     if (!authUserIdToUse) {
       const { data: inviteData, error: inviteError } = await supabaseAdmin.auth.admin.inviteUserByEmail(
         normalizedEmail,
-        { redirectTo: onboardingRedirectTo }
+        { redirectTo: inviteRedirectTo }
       );
 
       if (inviteError) {
@@ -443,7 +437,7 @@ export async function POST(request: NextRequest) {
       action = 'CREATED';
     } else {
       const { error: recoveryError } = await supabaseAdmin.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: onboardingRedirectTo,
+        redirectTo: inviteRedirectTo,
       });
       if (recoveryError) {
         return toResponse(
