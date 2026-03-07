@@ -651,7 +651,6 @@ export default function StaffPage() {
         }
         if (
           result.code === 'AUTH_INVITE_FAILED'
-          || result.code === 'AUTH_RECOVERY_FAILED'
           || result.code === 'AUTH_USER_LOOKUP_FAILED'
           || result.code === 'MISSING_AUTH_ID'
         ) {
@@ -699,8 +698,8 @@ export default function StaffPage() {
 
       if (created) {
         const msg = action === 'ADDED_EXISTING_AUTH'
-          ? 'Employee added. Password setup email sent.'
-          : 'Employee created. Onboarding email sent.';
+          ? 'Employee added.'
+          : 'Employee created. Invite sent.';
         setSuccessMessage(msg);
         closeModal();
       } else if (invited) {
@@ -1204,7 +1203,7 @@ export default function StaffPage() {
                 <p className="text-xs text-theme-muted mt-1">PIN login is disabled for now.</p>
                 {inviteOnly && (
                   <p className="text-xs text-theme-muted mt-1">
-                    This employee already has an account in another restaurant. An invitation will be sent.
+                    This employee already has an account in another restaurant. They will be added directly.
                   </p>
                 )}
                 {addDirect && (

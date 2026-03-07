@@ -61,6 +61,12 @@ type ChangeLoginEmailApiResponse = {
   message?: string;
 };
 
+type ResendInviteApiResponse = {
+  ok?: boolean;
+  error?: string;
+  code?: string;
+};
+
 export function StaffProfileModal({
   isOpen,
   mode,
@@ -90,6 +96,7 @@ export function StaffProfileModal({
   const [jobPay, setJobPay] = useState<Record<string, string>>({});
   const [jobPayErrors, setJobPayErrors] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [resendingInvite, setResendingInvite] = useState(false);
   const [modalError, setModalError] = useState('');
   const [blockedJobs, setBlockedJobs] = useState<string[]>([]);
   const [initializedKey, setInitializedKey] = useState<string | null>(null);
@@ -231,8 +238,12 @@ export function StaffProfileModal({
   const canEditLoginEmail = mode === 'edit' && (isSelf || isAdmin) && !(targetIsAdmin && !isAdmin);
   const canEditAccountType =
     canEdit && (isAdmin || isManager) && !isSelf && !(targetIsAdmin && !isAdmin);
+  const canResendInvite = (isAdmin || isManager) && !(targetIsAdmin && !isAdmin);
   const requiresJobs = accountType === 'EMPLOYEE' || accountType === 'MANAGER';
   const normalizedInitialLoginEmail = String(initialLoginEmail ?? '').trim().toLowerCase();
+  const normalizedLoginEmail = loginEmail.trim().toLowerCase();
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const loginEmailIsValid = emailRegex.test(normalizedLoginEmail);
 
   const toggleJob = (job: string) => {
     setModalError(''); // Clear error on job change
@@ -317,13 +328,11 @@ export function StaffProfileModal({
       onError('Employee number 0000 is not allowed.');
       return;
     }
-    const normalizedLoginEmail = loginEmail.trim().toLowerCase();
     const loginEmailChanged = canEditLoginEmail && normalizedLoginEmail !== normalizedInitialLoginEmail;
     if (!normalizedLoginEmail) {
       setLoginEmailError('Login email is required.');
       return;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(normalizedLoginEmail)) {
       setLoginEmailError('Please enter a valid email address.');
       return;
@@ -517,6 +526,39 @@ export function StaffProfileModal({
     }
   };
 
+  const handleResendInvite = async () => {
+    if (!user || !canResendInvite || !loginEmailIsValid) {
+      return;
+    }
+
+    setResendingInvite(true);
+    setModalError('');
+
+    try {
+      const result = await apiFetch<ResendInviteApiResponse>(
+        `/api/admin/staff/${encodeURIComponent(user.id)}/resend-invite`,
+        {
+          method: 'POST',
+        },
+      );
+
+      if (!result.ok || !result.data?.ok) {
+        const message = result.data?.error || result.error || 'Unable to resend invite.';
+        setModalError(message);
+        onError(message);
+        return;
+      }
+
+      onSuccess?.('Invite sent');
+    } catch {
+      const message = 'Unable to resend invite.';
+      setModalError(message);
+      onError(message);
+    } finally {
+      setResendingInvite(false);
+    }
+  };
+
   // Compute average hourly pay from jobPay state (ignores blank/undefined values)
   const computedAvgPay = (() => {
     const values = Object.values(jobPay)
@@ -572,6 +614,24 @@ export function StaffProfileModal({
             }`}
           />
           <p className="text-xs text-theme-muted mt-1">Changing login email sends a link to the new address.</p>
+          {canResendInvite && (
+            <div className="mt-3 flex items-start justify-between gap-3 rounded-lg border border-theme-primary bg-theme-tertiary px-3 py-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium text-theme-primary">Resend invite</p>
+                <p className="text-xs text-theme-muted mt-1">
+                  Sends a new account invite email so they can set a password.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleResendInvite}
+                disabled={!loginEmailIsValid || resendingInvite || submitting}
+                className="shrink-0 rounded-lg bg-theme-tertiary px-3 py-2 text-sm font-medium text-theme-secondary transition-colors hover:bg-theme-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {resendingInvite ? 'Sending...' : 'Resend invite'}
+              </button>
+            </div>
+          )}
           {loginEmailError && <p className="text-xs text-red-400 mt-1">{loginEmailError}</p>}
         </div>
 

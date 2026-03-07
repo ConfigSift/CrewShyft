@@ -2197,16 +2197,16 @@ export function WeekView() {
                       <button
                         type="button"
                         onClick={() => weekCoverageMode !== 'simple' && toggleWeekCoverageMode()}
-                        className={`rounded-full px-2 py-[2px] text-[8px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'simple' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
+                        className={`rounded-full px-1.5 py-[2px] text-[7px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'simple' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
                       >
                         Staff
                       </button>
                       <button
                         type="button"
                         onClick={() => weekCoverageMode !== 'bars' && toggleWeekCoverageMode()}
-                        className={`rounded-full px-2 py-[2px] text-[8px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'bars' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
+                        className={`rounded-full px-1.5 py-[2px] text-[7px] font-semibold uppercase tracking-wide transition-colors ${weekCoverageMode === 'bars' ? 'bg-amber-500 text-zinc-900' : 'text-theme-muted hover:text-theme-primary'}`}
                       >
-                        Cov
+                        Coverage
                       </button>
                     </div>
                   </div>

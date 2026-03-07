@@ -37,13 +37,6 @@ type CreateResponse = {
   message?: string;
 };
 
-type PostgrestErrorShape = {
-  message?: string | null;
-  details?: string | null;
-  hint?: string | null;
-  code?: string | null;
-};
-
 function isEmployeeNumberConflict(error: { code?: string | null; message?: string | null; details?: string | null }) {
   const code = error.code ?? '';
   const message = (error.message ?? '').toLowerCase();
@@ -109,32 +102,6 @@ async function findAuthUserIdByEmail(normalizedEmail: string): Promise<string | 
   return null;
 }
 
-async function getInvitationColumns(): Promise<Set<string>> {
-  const { data, error } = await supabaseAdmin
-    .from('information_schema.columns')
-    .select('column_name')
-    .eq('table_schema', 'public')
-    .eq('table_name', 'organization_invitations');
-  if (error || !data) {
-    if (process.env.NODE_ENV !== 'production') {
-       
-      console.warn('[create-user] unable to inspect organization_invitations columns', error?.message);
-    }
-    return new Set();
-  }
-  return new Set(data.map((row: { column_name: string }) => row.column_name));
-}
-
-function toPostgrestErrorShape(error: PostgrestErrorShape | null | undefined) {
-  if (!error) return undefined;
-  return {
-    message: error.message ?? 'Unknown error.',
-    details: error.details ?? null,
-    hint: error.hint ?? null,
-    code: error.code ?? null,
-  };
-}
-
 function isExistingAuthUserError(message: string) {
   const normalized = message.toLowerCase();
   return (
@@ -162,8 +129,6 @@ export async function POST(request: NextRequest) {
     if (code) responseBody.code = code;
     return respond(NextResponse.json(responseBody, { status }));
   };
-  const toPostgrestErrorResponse = (error: PostgrestErrorShape | null | undefined, status = 400) =>
-    respond(NextResponse.json({ error: toPostgrestErrorShape(error) }, { status }));
 
   try {
     const payload = (await request.json()) as CreatePayload;
@@ -306,9 +271,7 @@ export async function POST(request: NextRequest) {
     }
 
     const existingAuthUserId = await findAuthUserIdByEmail(normalizedEmail);
-    let membershipOrgIds: string[] = [];
     let hasMembershipInThisOrg = false;
-    let hasMembershipInOtherOrg = false;
 
     if (existingAuthUserId) {
       const { data: membershipRows, error: membershipRowsError } = await supabaseAdmin
@@ -326,9 +289,8 @@ export async function POST(request: NextRequest) {
           400
         );
       }
-      membershipOrgIds = (membershipRows ?? []).map((row: { organization_id?: string }) => String(row.organization_id ?? ''));
+      const membershipOrgIds = (membershipRows ?? []).map((row: { organization_id?: string }) => String(row.organization_id ?? ''));
       hasMembershipInThisOrg = membershipOrgIds.includes(payload.organizationId);
-      hasMembershipInOtherOrg = membershipOrgIds.some((id) => id !== payload.organizationId);
     }
 
     const { data: existingEmailRows, error: existingEmailError } = await supabaseAdmin
@@ -379,7 +341,6 @@ export async function POST(request: NextRequest) {
     }
 
     let authUserIdToUse = existingAuthUserId;
-    let invited = false;
     let action: CreateResponse['action'] = 'CREATED';
     const inviteRedirectTo = getStaffInviteRedirect();
 
@@ -405,6 +366,11 @@ export async function POST(request: NextRequest) {
             );
           }
           authUserIdToUse = fallbackAuthUserId;
+          console.info('[create-user] branch=existing_user_no_email', {
+            organizationId: payload.organizationId,
+            email: normalizedEmail,
+            source: 'invite-fallback',
+          });
         } else {
           return toResponse(
             {
@@ -419,6 +385,10 @@ export async function POST(request: NextRequest) {
         }
       } else {
         authUserIdToUse = inviteData?.user?.id ?? (await findAuthUserIdByEmail(normalizedEmail));
+        console.info('[create-user] branch=new_user_invite_sent', {
+          organizationId: payload.organizationId,
+          email: normalizedEmail,
+        });
       }
 
       if (!authUserIdToUse) {
@@ -436,132 +406,15 @@ export async function POST(request: NextRequest) {
 
       action = 'CREATED';
     } else {
-      const { error: recoveryError } = await supabaseAdmin.auth.resetPasswordForEmail(normalizedEmail, {
-        redirectTo: inviteRedirectTo,
+      console.info('[create-user] branch=existing_user_no_email', {
+        organizationId: payload.organizationId,
+        email: normalizedEmail,
+        source: 'existing-auth-user',
       });
-      if (recoveryError) {
-        return toResponse(
-          {
-            created: false,
-            invited: false,
-            already_member: false,
-            code: 'AUTH_RECOVERY_FAILED',
-            error: recoveryError.message ?? 'Unable to send onboarding email.',
-          },
-          400
-        );
-      }
-
-      if (hasMembershipInOtherOrg) {
-        invited = true;
-        action = 'INVITED';
-      } else {
-        action = 'ADDED_EXISTING_AUTH';
-      }
+      action = 'ADDED_EXISTING_AUTH';
     }
 
     const membershipRole = targetRole.toLowerCase();
-
-    if (invited) {
-      const inviteColumns = await getInvitationColumns();
-      const now = new Date();
-      const nowIso = now.toISOString();
-      const expiresIso = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
-      const requesterProfileId = await supabaseAdmin
-        .from('users')
-        .select('id')
-        .eq('organization_id', payload.organizationId)
-        .eq('auth_user_id', authUserId)
-        .maybeSingle()
-        .then((res) => res.data?.id ?? null);
-
-      const baseInvitePayload: Record<string, unknown> = {
-        organization_id: payload.organizationId,
-        email: normalizedEmail,
-        role: membershipRole,
-        status: 'pending',
-        invited_by_auth_user_id: authUserId,
-      };
-
-      if (inviteColumns.has('created_at')) baseInvitePayload.created_at = nowIso;
-      if (inviteColumns.has('updated_at')) baseInvitePayload.updated_at = nowIso;
-      if (inviteColumns.has('expires_at')) baseInvitePayload.expires_at = expiresIso;
-      if (inviteColumns.has('created_by_auth_user_id')) baseInvitePayload.created_by_auth_user_id = authUserId;
-      if (inviteColumns.has('invited_by_user_id')) baseInvitePayload.invited_by_user_id = requesterProfileId ?? authUserId;
-      if (inviteColumns.has('created_by_user_id')) baseInvitePayload.created_by_user_id = requesterProfileId ?? authUserId;
-      if (inviteColumns.has('invited_by')) baseInvitePayload.invited_by = requesterProfileId ?? authUserId;
-      if (inviteColumns.has('invited_by_email')) baseInvitePayload.invited_by_email = authData.user?.email ?? null;
-
-      if (inviteColumns.has('token')) baseInvitePayload.token = crypto.randomUUID();
-      if (inviteColumns.has('invite_token')) baseInvitePayload.invite_token = crypto.randomUUID();
-      if (inviteColumns.has('invitation_token')) baseInvitePayload.invitation_token = crypto.randomUUID();
-
-      const { data: existingInvite } = await supabaseAdmin
-        .from('organization_invitations')
-        .select('id,status')
-        .eq('organization_id', payload.organizationId)
-        .eq('email', normalizedEmail)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (existingInvite?.id) {
-        const status = String(existingInvite.status ?? '').trim().toLowerCase();
-        const activeStatuses = new Set(['pending', 'sent']);
-        if (activeStatuses.has(status)) {
-          return toResponse({
-            created: false,
-            invited: true,
-            already_member: false,
-            alreadySent: true,
-            action,
-            code: 'INVITE_ALREADY_SENT',
-            message: 'Invite already sent.',
-          });
-        }
-
-        const updatePayload: Record<string, unknown> = {
-          status: 'pending',
-          invited_by_auth_user_id: authUserId,
-        };
-        if (inviteColumns.has('updated_at')) updatePayload.updated_at = nowIso;
-        if (inviteColumns.has('role')) updatePayload.role = membershipRole;
-        if (inviteColumns.has('expires_at')) updatePayload.expires_at = expiresIso;
-        if (inviteColumns.has('created_by_auth_user_id')) updatePayload.created_by_auth_user_id = authUserId;
-        if (inviteColumns.has('invited_by_user_id')) updatePayload.invited_by_user_id = requesterProfileId ?? authUserId;
-        if (inviteColumns.has('created_by_user_id')) updatePayload.created_by_user_id = requesterProfileId ?? authUserId;
-        if (inviteColumns.has('invited_by')) updatePayload.invited_by = requesterProfileId ?? authUserId;
-        if (inviteColumns.has('invited_by_email')) updatePayload.invited_by_email = authData.user?.email ?? null;
-
-        const { error: inviteUpdateError } = await supabaseAdmin
-          .from('organization_invitations')
-          .update(updatePayload)
-          .eq('id', existingInvite.id);
-        if (inviteUpdateError) {
-          if (process.env.NODE_ENV !== 'production') {
-             
-            console.error('[create-user] invite update failed', inviteUpdateError);
-          }
-          return toPostgrestErrorResponse(inviteUpdateError, 400);
-        }
-
-        return toResponse({ created: false, invited: true, already_member: false, reactivated: true, action });
-      }
-
-      const { error: inviteInsertError } = await supabaseAdmin
-        .from('organization_invitations')
-        .insert(baseInvitePayload);
-
-      if (inviteInsertError) {
-        if (process.env.NODE_ENV !== 'production') {
-           
-          console.error('[create-user] invite insert failed', inviteInsertError);
-        }
-        return toPostgrestErrorResponse(inviteInsertError, 400);
-      }
-
-      return toResponse({ created: false, invited: true, already_member: false, action });
-    }
 
     // Sanitize jobPay: ensure it's a valid Record<string, number> with no NaN values
     const sanitizedJobPay: Record<string, number> = {};

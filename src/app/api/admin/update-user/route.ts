@@ -129,7 +129,7 @@ export async function POST(request: NextRequest) {
 
   const targetAuthUserId = targetRow.auth_user_id ?? null;
 
-  let targetMembershipRole = getUserRole(targetRow.role ?? targetRow.account_type ?? 'EMPLOYEE');
+  let targetMembershipRole = getUserRole(targetRow.role ?? 'EMPLOYEE');
   if (targetAuthUserId) {
     const { data: targetMembership } = await supabaseAdmin
       .from('organization_memberships')
