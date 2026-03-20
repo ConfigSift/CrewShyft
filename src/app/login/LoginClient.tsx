@@ -14,7 +14,6 @@ import { resolvePostAuthDestination } from '@/lib/authRedirect';
 type LoginClientProps = {
   notice?: string | null;
   nextPath?: string | null;
-  setupDisabled: boolean;
 };
 
 function getConfirmationRedirectUrl() {
@@ -49,7 +48,7 @@ function sanitizeNextPath(candidate?: string | null): string | null {
   return value;
 }
 
-export default function LoginClient({ notice, nextPath, setupDisabled }: LoginClientProps) {
+export default function LoginClient({ notice, nextPath }: LoginClientProps) {
   const router = useRouter();
   const { currentUser, accessibleRestaurants, init } = useAuthStore();
   const safeNextPath = sanitizeNextPath(nextPath);
@@ -67,23 +66,10 @@ export default function LoginClient({ notice, nextPath, setupDisabled }: LoginCl
   const [resendMessage, setResendMessage] = useState('');
   const [loading, setLoading] = useState(false);
   const [transitioning, setTransitioning] = useState(false);
-  const [hasManagers, setHasManagers] = useState<boolean | null>(null);
 
   useEffect(() => {
     init();
   }, [init]);
-
-  useEffect(() => {
-    let isMounted = true;
-    supabase.rpc('has_manager').then(({ data }: { data: boolean | null }) => {
-      if (isMounted) {
-        setHasManagers(Boolean(data));
-      }
-    });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
 
   useEffect(() => {
     if (!currentUser && accessibleRestaurants.length === 0) return;
@@ -305,22 +291,6 @@ export default function LoginClient({ notice, nextPath, setupDisabled }: LoginCl
               <p className="text-sm text-red-400">
                 Verification link is invalid or expired. Request a new confirmation email below.
               </p>
-            </div>
-          )}
-
-          {hasManagers === false && !setupDisabled && (
-            <div className="flex items-center justify-between gap-3 bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-4">
-              <div>
-                <p className="text-sm font-medium text-amber-500">First time here?</p>
-                <p className="text-xs text-amber-400/80">Create the first manager account.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => router.push('/setup')}
-                className="px-3 py-1.5 rounded-md bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400"
-              >
-                Go to setup
-              </button>
             </div>
           )}
 

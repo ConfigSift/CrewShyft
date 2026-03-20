@@ -10,9 +10,8 @@ type LoginPageProps = {
 };
 
 export default async function LoginPage({ searchParams }: LoginPageProps) {
-  const setupDisabled = (process.env.DISABLE_SETUP ?? '').toLowerCase() === 'true';
   const resolvedParams = await Promise.resolve(searchParams ?? {});
   const notice = Array.isArray(resolvedParams.notice) ? resolvedParams.notice[0] : resolvedParams.notice;
   const nextPath = Array.isArray(resolvedParams.next) ? resolvedParams.next[0] : resolvedParams.next;
-  return <LoginClient notice={notice} nextPath={nextPath} setupDisabled={setupDisabled} />;
+  return <LoginClient notice={notice} nextPath={nextPath} />;
 }
