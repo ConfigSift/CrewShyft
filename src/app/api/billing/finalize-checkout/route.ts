@@ -143,17 +143,23 @@ async function finalizeCheckout(
     );
   }
 
-  const upsertResult = await upsertBillingAccountFromSubscription(
-    authUserId,
-    subscription,
-    supabaseAdmin,
-  );
+  // Per-org subscriptions skip billing_accounts writes to avoid overwriting
+  // a bundled subscription that may cover other orgs.
+  const isPerOrgSub = String(subscription.metadata?.billing_mode ?? '').trim() === 'per_org';
 
-  if (upsertResult.error) {
-    return applySupabaseCookies(
-      jsonNoStore({ error: 'Failed to persist billing account status.' }, { status: 500 }),
-      response,
+  if (!isPerOrgSub) {
+    const upsertResult = await upsertBillingAccountFromSubscription(
+      authUserId,
+      subscription,
+      supabaseAdmin,
     );
+
+    if (upsertResult.error) {
+      return applySupabaseCookies(
+        jsonNoStore({ error: 'Failed to persist billing account status.' }, { status: 500 }),
+        response,
+      );
+    }
   }
 
   const stripeCustomerId =
@@ -181,7 +187,7 @@ async function finalizeCheckout(
       ? (subscription.latest_invoice as Stripe.Invoice)
       : null;
   const active = isStatusActiveForGating(subscription, latestInvoice);
-  if (active && String(subscription.status ?? '').trim().toLowerCase() === 'incomplete') {
+  if (active && String(subscription.status ?? '').trim().toLowerCase() === 'incomplete' && !isPerOrgSub) {
     await supabaseAdmin
       .from('billing_accounts')
       .update({
@@ -191,21 +197,22 @@ async function finalizeCheckout(
       .eq('auth_user_id', authUserId);
   }
 
-  // Backward compatibility: keep org-level subscription row when metadata includes organization_id.
+  // Keep org-level subscription row when metadata includes organization_id.
   if (organizationId) {
-    const stripeCustomerId =
+    const orgStripeCustomerId =
       typeof subscription.customer === 'string'
         ? subscription.customer
         : subscription.customer?.id ?? null;
+    const billingMode = String(subscription.metadata?.billing_mode ?? '').trim() || 'legacy';
 
-    if (stripeCustomerId) {
+    if (orgStripeCustomerId) {
       await supabaseAdmin
         .from('subscriptions')
         .upsert(
           {
             organization_id: organizationId,
             status: active ? 'active' : subscription.status,
-            stripe_customer_id: stripeCustomerId,
+            stripe_customer_id: orgStripeCustomerId,
             stripe_subscription_id: subscription.id,
             current_period_start: toIsoFromUnixTimestamp(subscription.current_period_start),
             current_period_end: currentPeriodEnd,
@@ -213,6 +220,8 @@ async function finalizeCheckout(
             stripe_price_id: subscription.items.data[0]?.price?.id ?? null,
             quantity,
             updated_at: new Date().toISOString(),
+            owner_auth_user_id: authUserId,
+            billing_mode: billingMode === 'per_org' ? 'per_org' : 'legacy',
           },
           { onConflict: 'organization_id' },
         );

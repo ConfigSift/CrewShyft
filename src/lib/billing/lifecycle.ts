@@ -210,6 +210,7 @@ async function upsertLegacySubscriptionsForOwnedOrganizations(
   organizationIds: string[],
   subscription: Stripe.Subscription,
   supabaseClient: SupabaseClient,
+  ownerAuthUserId?: string,
 ) {
   if (organizationIds.length === 0) return;
 
@@ -231,6 +232,8 @@ async function upsertLegacySubscriptionsForOwnedOrganizations(
     stripe_price_id: subscription.items.data[0]?.price?.id ?? null,
     quantity,
     updated_at: new Date().toISOString(),
+    owner_auth_user_id: ownerAuthUserId ?? null,
+    billing_mode: 'legacy' as const,
   }));
 
   const { error } = await supabaseClient
@@ -513,6 +516,7 @@ export async function syncStripeQuantityToOwnedOrgCount(
     owned.ids,
     effectiveSubscription,
     supabaseClient,
+    authUserId,
   );
 
   return {

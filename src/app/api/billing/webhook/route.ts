@@ -162,10 +162,23 @@ async function upsertMirroredSubscriptionState(
   sourceEvent: string,
   eventId: string,
 ) {
-  // These writes go through separate Supabase calls, so this route cannot guarantee
-  // a true cross-table transaction. The webhook remains retryable until both writes
-  // succeed, which lets Stripe redelivery reconcile any partial progress safely.
-  await upsertBillingAccountRow(supabaseAdminClient, subscription, sourceEvent, eventId);
+  // Per-org subscriptions skip billing_accounts writes to avoid overwriting
+  // an existing bundled subscription row for other orgs.
+  const billingMode = String(subscription.metadata?.billing_mode ?? '').trim();
+  const isPerOrg = billingMode === 'per_org';
+
+  if (!isPerOrg) {
+    // Legacy bundled subscriptions: write to both tables for backward compatibility.
+    await upsertBillingAccountRow(supabaseAdminClient, subscription, sourceEvent, eventId);
+  } else {
+    console.log('[billing:webhook] skipping billing_accounts write for per_org subscription', {
+      eventId,
+      sourceEvent,
+      subscriptionId: subscription.id,
+      organizationId,
+    });
+  }
+
   return upsertSubscriptionRow(
     supabaseAdminClient,
     subscription,
@@ -256,6 +269,10 @@ async function upsertSubscriptionRow(
   const currentPeriodStart = toIsoFromUnixTimestamp(subscription.current_period_start);
   const currentPeriodEnd = toIsoFromUnixTimestamp(subscription.current_period_end);
 
+  // Resolve owner and billing mode from subscription metadata
+  const ownerAuthUserId = await resolveAuthUserIdForSubscription(supabaseAdminClient, subscription);
+  const billingMode = String(subscription.metadata?.billing_mode ?? '').trim() || 'legacy';
+
   const upsertPayload = {
     organization_id: organizationId,
     status: subscription.status,
@@ -267,6 +284,8 @@ async function upsertSubscriptionRow(
     quantity,
     current_period_start: currentPeriodStart,
     cancel_at_period_end: subscription.cancel_at_period_end,
+    owner_auth_user_id: ownerAuthUserId,
+    billing_mode: billingMode === 'per_org' ? 'per_org' : 'legacy',
   };
 
   console.log('[billing:webhook] upserting subscription row', {

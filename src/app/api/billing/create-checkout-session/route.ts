@@ -16,6 +16,7 @@ import {
   getOwnedOrganizationCount,
   isActiveBillingStatus,
 } from '@/lib/billing/customer';
+import { isOrgSubscriptionActive } from '@/lib/billing/orgSubscription';
 import { getBaseUrls } from '@/lib/routing/getBaseUrls';
 
 export const dynamic = 'force-dynamic';
@@ -277,7 +278,8 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
-  let desiredQuantity = 1;
+  // Per-org billing: each org gets its own subscription with quantity=1.
+  const desiredQuantity = 1;
   let effectiveIntentId: string | null = null;
   let effectiveOrganizationId: string | null = organizationId;
 
@@ -302,7 +304,6 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    desiredQuantity = Math.max(1, Number(intent.desired_quantity ?? 1));
     effectiveIntentId = intent.id;
     effectiveOrganizationId = null;
   } else if (organizationId) {
@@ -318,58 +319,48 @@ export async function POST(request: NextRequest) {
       return applySupabaseCookies(jsonError('Only admins can manage billing.', 403), response);
     }
 
-    const ownedResult = await getOwnedOrganizationCount(authUserId, supabaseAdmin);
-    if (ownedResult.error) {
+    // Per-org check: does THIS org already have an active subscription?
+    const orgSubResult = await isOrgSubscriptionActive(organizationId, supabaseAdmin);
+    if (orgSubResult.error) {
       return applySupabaseCookies(
-        NextResponse.json({ error: 'Unable to calculate required quantity.' }, { status: 500 }),
+        NextResponse.json({ error: 'Unable to check organization subscription.' }, { status: 500 }),
         response,
       );
     }
-    desiredQuantity = Math.max(1, ownedResult.count);
-  }
+    if (orgSubResult.active) {
+      return applySupabaseCookies(
+        NextResponse.json(
+          {
+            error: 'ORG_ALREADY_SUBSCRIBED',
+            message: 'This restaurant already has an active subscription.',
+            redirect: '/billing',
+          },
+          { status: 409 },
+        ),
+        response,
+      );
+    }
 
-  const billingAccountResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
-  if (billingAccountResult.error) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to load billing account.' }, { status: 500 }),
-      response,
-    );
-  }
-
-  if (
-    billingAccountResult.data &&
-    isActiveBillingStatus(billingAccountResult.data.status) &&
-    Number(billingAccountResult.data.quantity ?? 0) >= desiredQuantity
-  ) {
-    return applySupabaseCookies(
-      NextResponse.json(
-        {
-          error: 'ACTIVE_SUBSCRIPTION_SUFFICIENT',
-          message: 'Your active subscription already covers this restaurant count.',
-          redirect: '/billing',
-        },
-        { status: 409 },
-      ),
-      response,
-    );
-  }
-
-  if (
-    billingAccountResult.data &&
-    isActiveBillingStatus(billingAccountResult.data.status) &&
-    Number(billingAccountResult.data.quantity ?? 0) < desiredQuantity
-  ) {
-    return applySupabaseCookies(
-      NextResponse.json(
-        {
-          error: 'USE_UPGRADE_FLOW',
-          message: `Upgrade to ${desiredQuantity} locations from Billing before creating this restaurant.`,
-          redirect: '/billing',
-        },
-        { status: 409 },
-      ),
-      response,
-    );
+    // Fallback: also check billing_accounts for bundled coverage (legacy path).
+    // If the user has an active bundled subscription that covers this org count,
+    // they're already covered — don't create a duplicate.
+    const billingAccountResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
+    if (billingAccountResult.data && isActiveBillingStatus(billingAccountResult.data.status)) {
+      const ownedResult = await getOwnedOrganizationCount(authUserId, supabaseAdmin);
+      if (!ownedResult.error && Number(billingAccountResult.data.quantity ?? 0) >= ownedResult.count) {
+        return applySupabaseCookies(
+          NextResponse.json(
+            {
+              error: 'ACTIVE_SUBSCRIPTION_SUFFICIENT',
+              message: 'Your existing subscription already covers this restaurant.',
+              redirect: '/billing',
+            },
+            { status: 409 },
+          ),
+          response,
+        );
+      }
+    }
   }
 
   const email = authData.user.email ?? '';
@@ -411,10 +402,12 @@ export async function POST(request: NextRequest) {
   const subscriptionMetadata: Record<string, string> = {
     auth_user_id: authUserId,
     desired_quantity: String(desiredQuantity),
+    billing_mode: 'per_org',
   };
   const checkoutMetadata: Record<string, string> = {
     auth_user_id: authUserId,
     desired_quantity: String(desiredQuantity),
+    billing_mode: 'per_org',
   };
 
   if (effectiveIntentId) {

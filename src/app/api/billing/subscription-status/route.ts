@@ -11,6 +11,7 @@ import {
   refreshBillingAccountFromStripe,
   upsertBillingAccountFromSubscription,
 } from '@/lib/billing/customer';
+import { checkOrgsCoverage } from '@/lib/billing/orgSubscription';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -218,32 +219,76 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  let billingResult = await refreshBillingAccountFromStripe(authUserId, supabaseAdmin);
-  if (billingResult.error) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to check billing account.' }, { status: 500 }),
-      response,
-    );
-  }
+  // ── Dual-read: per-org subscriptions first, billing_accounts fallback ──
+  // Check if owned orgs have per-org subscriptions in the subscriptions table.
+  const orgCoverage = await checkOrgsCoverage(ownedResult.ids, supabaseAdmin);
+  const allOrgsCovered = ownedOrgCount > 0 && orgCoverage.coveredOrgIds.length >= ownedOrgCount;
+  const hasAnyPerOrgSub = orgCoverage.subscriptions.some(
+    (sub) => sub.billing_mode === 'per_org' && isActiveBillingStatus(sub.status),
+  );
 
-  if (!billingResult.data) {
-    await trySelfHealFromStripe(authUserId);
-    billingResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
+  // If all orgs are covered by per-org subscriptions, skip billing_accounts entirely.
+  let active: boolean;
+  let status: string;
+  let overLimit: boolean;
+  let account: Awaited<ReturnType<typeof getBillingAccountByAuthUserId>>['data'] = null;
+  const requiredQuantity = Math.max(1, ownedOrgCount);
+
+  if (allOrgsCovered) {
+    // All orgs have active subscriptions — user is fully covered.
+    active = true;
+    status = 'active';
+    overLimit = false;
+  } else {
+    // Fall back to billing_accounts (legacy bundled path).
+    let billingResult = await refreshBillingAccountFromStripe(authUserId, supabaseAdmin);
     if (billingResult.error) {
       return applySupabaseCookies(
         NextResponse.json({ error: 'Unable to check billing account.' }, { status: 500 }),
         response,
       );
     }
+
+    if (!billingResult.data) {
+      await trySelfHealFromStripe(authUserId);
+      billingResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
+      if (billingResult.error) {
+        return applySupabaseCookies(
+          NextResponse.json({ error: 'Unable to check billing account.' }, { status: 500 }),
+          response,
+        );
+      }
+    }
+
+    account = billingResult.data;
+    status = String(account?.status ?? 'none').trim().toLowerCase();
+    const quantity = Math.max(0, Number(account?.quantity ?? 0));
+    const baseActive = isActiveBillingStatus(status);
+
+    // For the billing_accounts path, count orgs NOT covered by per-org subs.
+    // The bundled subscription only needs to cover the uncovered remainder.
+    const uncoveredCount = orgCoverage.uncoveredOrgIds.length;
+    overLimit = baseActive && quantity < uncoveredCount;
+    active = baseActive && !overLimit;
+
+    // If some orgs have per-org subs and the rest are covered by bundled, user is active.
+    if (orgCoverage.coveredOrgIds.length > 0 && uncoveredCount === 0) {
+      active = true;
+      overLimit = false;
+    }
   }
 
-  const account = billingResult.data;
-  const status = String(account?.status ?? 'none').trim().toLowerCase();
-  const quantity = Math.max(0, Number(account?.quantity ?? 0));
-  const requiredQuantity = Math.max(1, ownedOrgCount);
-  const baseActive = isActiveBillingStatus(status);
-  const overLimit = baseActive && quantity < requiredQuantity;
-  const active = baseActive && !overLimit;
+  // Build per-org subscription summary for the response.
+  const orgSubscriptions = orgCoverage.subscriptions.map((sub) => ({
+    organization_id: sub.organization_id,
+    status: sub.status,
+    stripe_subscription_id: sub.stripe_subscription_id,
+    stripe_price_id: sub.stripe_price_id,
+    quantity: sub.quantity,
+    current_period_end: sub.current_period_end,
+    cancel_at_period_end: sub.cancel_at_period_end,
+    billing_mode: sub.billing_mode,
+  }));
 
   if (hasNextRedirect) {
     if (isEmployeeLike && !isManagerLike) {
@@ -289,7 +334,7 @@ export async function GET(request: NextRequest) {
             status,
             stripe_subscription_id: account.stripe_subscription_id,
             stripe_price_id: account.stripe_price_id,
-            quantity,
+            quantity: Math.max(0, Number(account.quantity ?? 0)),
             current_period_end: account.current_period_end,
             cancel_at_period_end: Boolean(account.cancel_at_period_end),
           }
@@ -297,6 +342,11 @@ export async function GET(request: NextRequest) {
       owned_org_count: ownedOrgCount,
       required_quantity: requiredQuantity,
       over_limit: overLimit,
+      // Per-org billing data (new)
+      org_subscriptions: orgSubscriptions,
+      has_per_org_billing: hasAnyPerOrgSub,
+      covered_org_count: orgCoverage.coveredOrgIds.length,
+      uncovered_org_count: orgCoverage.uncoveredOrgIds.length,
     }),
     response,
     active,
