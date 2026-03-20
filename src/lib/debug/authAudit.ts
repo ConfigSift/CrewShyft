@@ -1,9 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase/admin';
-
-// DEV ONLY: audit for duplicate auth/email mappings. Do not enable in prod.
-export const dynamic = 'force-dynamic';
-export const revalidate = 0;
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 type UserRow = {
   id: string;
@@ -14,7 +11,7 @@ type UserRow = {
 
 function buildDuplicates<T extends { id: string; organization_id: string | null }>(
   rows: T[],
-  keyFn: (row: T) => string | null
+  keyFn: (row: T) => string | null,
 ) {
   const map = new Map<string, T[]>();
   for (const row of rows) {
@@ -29,8 +26,8 @@ function buildDuplicates<T extends { id: string; organization_id: string | null 
     .map(([key, list]) => ({ key, count: list.length, rows: list }));
 }
 
-export async function GET() {
-  if (process.env.NODE_ENV === 'production') {
+export async function handleAuthAudit() {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { getUserRole } from '@/utils/role';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 // DEV ONLY: promote membership roles. Do not enable in prod.
 export const dynamic = 'force-dynamic';
@@ -14,7 +15,7 @@ type Payload = {
 };
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 

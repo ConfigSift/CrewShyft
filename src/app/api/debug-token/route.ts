@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET(req: NextRequest) {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 

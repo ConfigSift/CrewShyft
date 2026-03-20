@@ -6,6 +6,7 @@ import {
   STRIPE_WEBHOOK_SECRET,
 } from '@/lib/stripe/config';
 import { getBaseUrls } from '@/lib/routing/getBaseUrls';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -49,6 +50,10 @@ function deriveStripeMode(secretKeyPrefix: SecretPrefix, publishableKeyPrefix: P
 }
 
 export async function GET(request: NextRequest) {
+  if (!isDebugAllowed()) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 });
+  }
+
   const host =
     String(request.headers.get('x-forwarded-host') ?? '').trim()
     || String(request.headers.get('host') ?? '').trim()
@@ -68,7 +73,6 @@ export async function GET(request: NextRequest) {
   const secretKeyPrefix = getSecretKeyPrefix(stripeSecretKey);
   const mode = deriveStripeMode(secretKeyPrefix, publishableKeyPrefix);
   const publishableKeySuffix = suffix(stripePublishableKey);
-  const secretKeySuffix = suffix(stripeSecretKey);
   const monthlyPriceIdSuffix = suffix(monthlyPriceId);
   const annualPriceIdSuffix = suffix(annualPriceId);
   const priceIdSuffixes =
@@ -107,7 +111,6 @@ export async function GET(request: NextRequest) {
     publishableKeyPrefix,
     publishableKeySuffix,
     secretKeyPrefix,
-    secretKeySuffix,
     mode,
     hasWebhookSecret: Boolean(String(STRIPE_WEBHOOK_SECRET ?? '').trim()),
     hasPriceId: Boolean(monthlyPriceId || annualPriceId),
@@ -116,7 +119,7 @@ export async function GET(request: NextRequest) {
     monthlyPriceIdPrefix: prefix(monthlyPriceId),
     annualPriceIdPrefix: prefix(annualPriceId),
     priceIdSuffixes,
-    stripeAccountId,
+    hasStripeAccount: stripeAccountId !== null,
     stripeLivemode,
   });
 }

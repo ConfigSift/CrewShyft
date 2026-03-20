@@ -56,9 +56,6 @@ function buildStripeEmbeddedCsp(): string {
 }
 
 const nextConfig: NextConfig = {
-  typescript: {
-    ignoreBuildErrors: true,
-  },
   compiler: {
     removeConsole: {
       exclude: ['error'],

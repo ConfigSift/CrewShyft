@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 export async function handleWhoami(req: NextRequest) {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 

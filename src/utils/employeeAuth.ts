@@ -20,6 +20,7 @@ export function normalizeEmployeeNumber(value: unknown): number | null {
 }
 
 export function validatePin(pin: string, mode: 'login' | 'reset' | 'create'): boolean {
-  if (mode === 'login') return /^\d+$/.test(pin);
+  // All modes require at least 4 numeric digits. Create/reset enforce exactly 4.
+  if (mode === 'login') return /^\d{4,}$/.test(pin);
   return /^\d{4}$/.test(pin);
 }

@@ -342,6 +342,12 @@ async function runMiddleware(req: NextRequest) {
 
   const { supabaseUrl, supabaseAnonKey, isValid } = getSupabaseEnvEdgeSafe();
   if (!isValid) {
+    // Supabase is misconfigured — fail closed for protected routes rather than silently passing through.
+    if (protectedRoute) {
+      const host = normalizeHost(req.headers.get('host'));
+      const localOrPreview = isLocalOrPreviewHost(host);
+      return NextResponse.redirect(buildLoginRedirectUrl(req, localOrPreview, originalPathname));
+    }
     return response;
   }
 
@@ -452,7 +458,11 @@ async function runMiddleware(req: NextRequest) {
     }
 
     if (billingCookie === 'past_due') {
-      response.headers.set('x-sf-billing-warning', 'past_due');
+      // past_due: redirect to billing rather than only setting a header that the UI may ignore.
+      // NOTE: as of now no server path writes 'past_due' to this cookie — subscription-status
+      // only writes 'active' or clears it, and authStore.ts only writes 'active'.
+      // This branch is reserved for future use (e.g. webhook-driven status propagation).
+      return redirectTo('/billing?notice=past_due', 'billing:past_due');
     }
   }
 
@@ -465,7 +475,16 @@ export async function middleware(req: NextRequest) {
   } catch (error: unknown) {
     const err = error instanceof Error ? error : new Error(String(error));
     const stack = err.stack ? ` | ${err.stack}` : '';
-    console.error(`[middleware] fail-open: ${err.message}${stack}`);
+    console.error(`[middleware] unhandled error: ${err.message}${stack}`);
+
+    // Fail closed: redirect to login for protected routes rather than silently passing through.
+    const pathname = req.nextUrl.pathname;
+    if (!isNonPageAsset(pathname) && isProtectedAppRoute(pathname)) {
+      const host = normalizeHost(req.headers.get('host'));
+      const localOrPreview = isLocalOrPreviewHost(host);
+      return NextResponse.redirect(buildLoginRedirectUrl(req, localOrPreview, pathname));
+    }
+
     return NextResponse.next();
   }
 }

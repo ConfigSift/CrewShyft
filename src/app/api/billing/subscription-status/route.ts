@@ -34,6 +34,9 @@ function sanitizeNextPath(value: string | null): string | null {
 }
 
 function setBillingCookie(response: NextResponse, isActive: boolean) {
+  // NOTE: must NOT be httpOnly — authStore.ts manages this same cookie via document.cookie
+  // (setBillingCookie / clearBillingCookie).  Making it httpOnly prevents JS from clearing
+  // it on sign-out, which would leave a stale billing token across user sessions.
   if (isActive) {
     response.cookies.set(BILLING_COOKIE_NAME, 'active', {
       path: '/',

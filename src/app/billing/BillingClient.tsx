@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import {
   AlertTriangle,
   ArrowLeft,
@@ -78,6 +78,8 @@ function isMissingBillingAccountError(message: string) {
 
 export default function BillingClient() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const noticeParam = searchParams.get('notice');
   const {
     currentUser,
     activeRestaurantId,
@@ -333,10 +335,13 @@ export default function BillingClient() {
           </div>
         )}
 
-        {subscriptionStatus === 'past_due' && (
+        {(subscriptionStatus === 'past_due' || noticeParam === 'past_due') && (
           <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 mb-6">
-            <p className="text-sm text-amber-500">
-              Your last payment failed. Please update your payment method to avoid service interruption.
+            <p className="text-sm text-amber-500 font-medium">
+              Payment past due — your account access is limited.
+            </p>
+            <p className="text-xs text-amber-400 mt-1">
+              Please update your payment method below to restore full access.
             </p>
           </div>
         )}

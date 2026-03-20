@@ -1,9 +1,19 @@
+/**
+ * @deprecated LEGACY — no longer called by any in-repo code.
+ * The active checkout finalization flow uses /api/billing/finalize-checkout instead,
+ * which also writes to billing_accounts (auth-user-scoped) and handles incomplete
+ * subscription status.  This route only writes to the org-level subscriptions table
+ * and is kept for external/historical call compatibility only.
+ *
+ * If you are adding a new integration, use /api/billing/finalize-checkout.
+ */
 import { NextRequest, NextResponse } from 'next/server';
 import Stripe from 'stripe';
-import { createClient } from '@supabase/supabase-js';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 import { jsonError } from '@/lib/apiResponses';
 import { stripe } from '@/lib/stripe/server';
+import { toIsoFromUnixTimestamp } from '@/lib/billing/customer';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -11,27 +21,6 @@ export const revalidate = 0;
 type SyncAfterCheckoutPayload = {
   session_id?: string;
 };
-
-function getSupabaseAdminClient() {
-  const supabaseUrl = process.env.SUPABASE_URL ?? '';
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY ?? '';
-
-  if (!supabaseUrl || !serviceRoleKey) {
-    throw new Error('Supabase admin environment variables are not configured.');
-  }
-
-  return createClient(supabaseUrl, serviceRoleKey, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-}
-
-function toIsoFromUnixTimestamp(unixSeconds: number | null | undefined) {
-  if (typeof unixSeconds !== 'number') return null;
-  return new Date(unixSeconds * 1000).toISOString();
-}
 
 function getSubscriptionId(value: string | Stripe.Subscription | null) {
   if (!value) return null;
@@ -75,6 +64,15 @@ export async function POST(request: NextRequest) {
     const checkoutSession = await stripe.checkout.sessions.retrieve(sessionId, {
       expand: ['subscription'],
     });
+
+    // Ownership check: verify the session belongs to the authenticated user.
+    const sessionAuthUserId = String(checkoutSession.metadata?.auth_user_id ?? '').trim() || null;
+    if (sessionAuthUserId && sessionAuthUserId !== authUserId) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: 'Checkout session does not belong to this user.' }, { status: 403 }),
+        response,
+      );
+    }
 
     const subscriptionId = getSubscriptionId(checkoutSession.subscription as string | Stripe.Subscription | null);
     if (!subscriptionId) {
@@ -120,7 +118,6 @@ export async function POST(request: NextRequest) {
     const currentPeriodStart = toIsoFromUnixTimestamp(subscription.current_period_start);
     const currentPeriodEnd = toIsoFromUnixTimestamp(subscription.current_period_end);
 
-    const supabaseAdmin = getSupabaseAdminClient();
     const { error: upsertError } = await supabaseAdmin
       .from('subscriptions')
       .upsert(

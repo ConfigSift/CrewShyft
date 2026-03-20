@@ -13,7 +13,13 @@ type SyncPayload = {
 };
 
 export async function POST(request: NextRequest) {
-  const payload = (await request.json()) as SyncPayload;
+  let payload: SyncPayload;
+  try {
+    payload = (await request.json()) as SyncPayload;
+  } catch {
+    return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
+  }
+
   const { organizationId } = payload;
 
   if (!organizationId) {

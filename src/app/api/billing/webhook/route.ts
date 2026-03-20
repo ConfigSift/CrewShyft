@@ -5,9 +5,15 @@ import { stripe } from '@/lib/stripe/server';
 import { STRIPE_WEBHOOK_SECRET } from '@/lib/stripe/config';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
+  isMissingTableError,
   resolveAuthUserIdFromStripeCustomer,
   upsertBillingAccountFromSubscription,
 } from '@/lib/billing/customer';
+import {
+  beginBillingWebhookEvent,
+  markBillingWebhookEventCompleted,
+  markBillingWebhookEventFailed,
+} from '@/lib/billing/webhookEvents';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
@@ -149,6 +155,94 @@ async function upsertBillingAccountRow(
   }
 }
 
+async function upsertMirroredSubscriptionState(
+  supabaseAdminClient: typeof supabaseAdmin,
+  subscription: Stripe.Subscription,
+  organizationId: string,
+  sourceEvent: string,
+  eventId: string,
+) {
+  // These writes go through separate Supabase calls, so this route cannot guarantee
+  // a true cross-table transaction. The webhook remains retryable until both writes
+  // succeed, which lets Stripe redelivery reconcile any partial progress safely.
+  await upsertBillingAccountRow(supabaseAdminClient, subscription, sourceEvent, eventId);
+  return upsertSubscriptionRow(
+    supabaseAdminClient,
+    subscription,
+    organizationId,
+    sourceEvent,
+    eventId,
+  );
+}
+
+async function updateMirroredSubscriptionStatus(
+  supabaseAdminClient: typeof supabaseAdmin,
+  subscriptionId: string,
+  sourceEvent: string,
+  eventId: string,
+  updates: {
+    status: string;
+    cancel_at_period_end?: boolean;
+  },
+) {
+  const payload = {
+    ...updates,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabaseAdminClient
+    .from('subscriptions')
+    .update(payload)
+    .eq('stripe_subscription_id', subscriptionId);
+
+  if (error) {
+    console.error('[billing:webhook] mirrored subscriptions update failed', {
+      eventId,
+      eventType: sourceEvent,
+      subscriptionId,
+      supabaseError: {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code,
+      },
+    });
+    throw error;
+  }
+
+  const { error: billingAccountError } = await supabaseAdminClient
+    .from('billing_accounts')
+    .update(payload)
+    .eq('stripe_subscription_id', subscriptionId);
+
+  if (billingAccountError) {
+    if (isMissingTableError(billingAccountError)) {
+      console.warn(
+        '[billing:webhook] billing_accounts table missing during mirrored status update',
+        {
+          eventId,
+          eventType: sourceEvent,
+          subscriptionId,
+        },
+      );
+      return;
+    }
+
+    console.error('[billing:webhook] mirrored billing_accounts update failed', {
+      eventId,
+      eventType: sourceEvent,
+      subscriptionId,
+      supabaseError: {
+        message: billingAccountError.message,
+        details: billingAccountError.details,
+        hint: billingAccountError.hint,
+        code: billingAccountError.code,
+      },
+    });
+    throw billingAccountError;
+  }
+}
+
 async function upsertSubscriptionRow(
   supabaseAdminClient: typeof supabaseAdmin,
   subscription: Stripe.Subscription,
@@ -277,8 +371,27 @@ export async function handleStripeWebhook(request: NextRequest) {
     eventType: event.type,
   });
 
+  let supabaseAdminClient: typeof supabaseAdmin | null = null;
   try {
-    const supabaseAdminClient = getSupabaseAdminClient();
+    supabaseAdminClient = getSupabaseAdminClient();
+    const beginResult = await beginBillingWebhookEvent(supabaseAdminClient, event);
+    if (beginResult.kind === 'duplicate') {
+      console.log('[billing:webhook] duplicate event acknowledged without reprocessing', {
+        eventId: event.id,
+        eventType: event.type,
+        status: beginResult.status,
+      });
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+    if (beginResult.persistence === 'none') {
+      console.warn(
+        '[billing:webhook] billing_webhook_events table missing; processing without idempotency persistence',
+        {
+          eventId: event.id,
+          eventType: event.type,
+        },
+      );
+    }
 
     switch (event.type) {
       case 'checkout.session.completed':
@@ -311,17 +424,23 @@ export async function handleStripeWebhook(request: NextRequest) {
         await handleSubscriptionDeleted(
           event.data.object as Stripe.Subscription,
           supabaseAdminClient,
+          event.id,
         );
         break;
 
       case 'invoice.paid':
-        await handleInvoicePaid(event.data.object as Stripe.Invoice, supabaseAdminClient);
+        await handleInvoicePaid(
+          event.data.object as Stripe.Invoice,
+          supabaseAdminClient,
+          event.id,
+        );
         break;
 
       case 'invoice.payment_failed':
         await handleInvoicePaymentFailed(
           event.data.object as Stripe.Invoice,
           supabaseAdminClient,
+          event.id,
         );
         break;
 
@@ -329,6 +448,7 @@ export async function handleStripeWebhook(request: NextRequest) {
         await handleInvoicePaymentActionRequired(
           event.data.object as Stripe.Invoice,
           supabaseAdminClient,
+          event.id,
         );
         break;
 
@@ -346,7 +466,19 @@ export async function handleStripeWebhook(request: NextRequest) {
         });
         break;
     }
+
+    await markBillingWebhookEventCompleted(supabaseAdminClient, event);
   } catch (err) {
+    if (supabaseAdminClient) {
+      try {
+        await markBillingWebhookEventFailed(supabaseAdminClient, event, err);
+      } catch (markFailedError) {
+        console.error(
+          '[billing:webhook] failed to persist webhook failure state',
+          markFailedError,
+        );
+      }
+    }
     console.error(`[billing:webhook] Error handling ${event.type}:`, err);
     return NextResponse.json({ error: 'Webhook handler failed.' }, { status: 500 });
   }
@@ -387,12 +519,6 @@ async function handleCheckoutCompleted(
 
   // Always pull the full, current subscription object before DB writes.
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  await upsertBillingAccountRow(
-    supabaseAdminClient,
-    subscription,
-    'checkout.session.completed',
-    eventId,
-  );
 
   let organizationId: string | null = subscription.metadata?.organization_id ?? null;
   if (!organizationId) {
@@ -412,6 +538,12 @@ async function handleCheckoutCompleted(
       subscriptionId: subscription.id,
       status: subscription.status,
     });
+    await upsertBillingAccountRow(
+      supabaseAdminClient,
+      subscription,
+      'checkout.session.completed',
+      eventId,
+    );
     return;
   }
 
@@ -426,7 +558,7 @@ async function handleCheckoutCompleted(
     metadata: subscription.metadata ?? null,
   });
 
-  const upsertResult = await upsertSubscriptionRow(
+  const upsertResult = await upsertMirroredSubscriptionState(
     supabaseAdminClient,
     subscription,
     organizationId,
@@ -467,15 +599,10 @@ async function handleSubscriptionCreatedOrUpdated(
 
   // Always pull the full, current subscription object before DB writes.
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  await upsertBillingAccountRow(
-    supabaseAdminClient,
-    subscription,
-    sourceEvent,
-    eventId,
-  );
 
   const organizationId = subscription.metadata?.organization_id ?? null;
   if (!organizationId) {
+    await upsertBillingAccountRow(supabaseAdminClient, subscription, sourceEvent, eventId);
     console.log('[billing:webhook] subscription event without organization metadata, billing account only', {
       eventId,
       eventType: sourceEvent,
@@ -495,7 +622,7 @@ async function handleSubscriptionCreatedOrUpdated(
     customer: subscription.customer,
   });
 
-  const upsertResult = await upsertSubscriptionRow(
+  const upsertResult = await upsertMirroredSubscriptionState(
     supabaseAdminClient,
     subscription,
     organizationId,
@@ -526,64 +653,50 @@ async function handleSubscriptionCreatedOrUpdated(
 async function handleSubscriptionDeleted(
   subscription: Stripe.Subscription,
   supabaseAdminClient: typeof supabaseAdmin,
+  eventId: string,
 ) {
   await upsertBillingAccountRow(
     supabaseAdminClient,
     subscription,
     'customer.subscription.deleted',
-    `customer.subscription.deleted:${subscription.id}`,
+    eventId,
   );
 
-  const { error } = await supabaseAdminClient
-    .from('subscriptions')
-    .update({
+  await updateMirroredSubscriptionStatus(
+    supabaseAdminClient,
+    subscription.id,
+    'customer.subscription.deleted',
+    eventId,
+    {
       status: 'canceled',
       cancel_at_period_end: false,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('stripe_subscription_id', subscription.id);
+    },
+  );
 
-  if (error) {
-    console.error('[billing:webhook] subscription.deleted DB update failed:', error.message);
-    throw error;
-  }
-
-  const { error: billingAccountError } = await supabaseAdminClient
-    .from('billing_accounts')
-    .update({
-      status: 'canceled',
-      cancel_at_period_end: false,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('stripe_subscription_id', subscription.id);
-
-  if (billingAccountError) {
-    console.error('[billing:webhook] subscription.deleted billing_accounts update failed:', billingAccountError.message);
-    throw billingAccountError;
-  }
-
-  console.log(`[billing:webhook] Subscription canceled: ${subscription.id}`);
+  console.log('[billing:webhook] subscription canceled', {
+    eventId,
+    eventType: 'customer.subscription.deleted',
+    subscriptionId: subscription.id,
+  });
 }
 
 async function handleInvoicePaid(
   invoice: Stripe.Invoice,
   supabaseAdminClient: typeof supabaseAdmin,
+  eventId: string,
 ) {
   const subscriptionId = getSubscriptionId(invoice.subscription);
 
   if (!subscriptionId) return;
 
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  await upsertBillingAccountRow(
-    supabaseAdminClient,
-    subscription,
-    'invoice.paid',
-    `invoice.paid:${invoice.id}`,
-  );
 
   const organizationId = subscription.metadata?.organization_id ?? null;
   if (!organizationId) {
+    await upsertBillingAccountRow(supabaseAdminClient, subscription, 'invoice.paid', eventId);
     console.log('[billing:webhook] invoice.paid without organization metadata, billing account only', {
+      eventId,
+      eventType: 'invoice.paid',
       invoiceId: invoice.id,
       subscriptionId: subscription.id,
       status: subscription.status,
@@ -591,22 +704,26 @@ async function handleInvoicePaid(
     return;
   }
 
-  const upsertResult = await upsertSubscriptionRow(
+  const upsertResult = await upsertMirroredSubscriptionState(
     supabaseAdminClient,
     subscription,
     organizationId,
     'invoice.paid',
-    `invoice.paid:${invoice.id}`,
+    eventId,
   );
 
   if (upsertResult.ignoredMissingOrganization) {
     console.log('[billing:webhook] invoice.paid skipped (organization missing)', {
+      eventId,
+      eventType: 'invoice.paid',
       organizationId,
       subscriptionId: subscription.id,
       status: subscription.status,
     });
   } else {
     console.log('[billing:webhook] invoice.paid upserted subscription', {
+      eventId,
+      eventType: 'invoice.paid',
       organizationId,
       subscriptionId: subscription.id,
       status: subscription.status,
@@ -618,6 +735,7 @@ async function handleInvoicePaid(
 async function handleInvoicePaymentFailed(
   invoice: Stripe.Invoice,
   supabaseAdminClient: typeof supabaseAdmin,
+  eventId: string,
 ) {
   const subscriptionId = getSubscriptionId(invoice.subscription);
 
@@ -628,63 +746,54 @@ async function handleInvoicePaymentFailed(
     supabaseAdminClient,
     subscription,
     'invoice.payment_failed',
-    `invoice.payment_failed:${invoice.id}`,
+    eventId,
   );
 
-  const { error } = await supabaseAdminClient
-    .from('subscriptions')
-    .update({
+  await updateMirroredSubscriptionStatus(
+    supabaseAdminClient,
+    subscriptionId,
+    'invoice.payment_failed',
+    eventId,
+    {
       status: 'past_due',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('stripe_subscription_id', subscriptionId);
-
-  if (error) {
-    console.error('[billing:webhook] invoice.payment_failed DB update failed:', error.message);
-    throw error;
-  }
-
-  const { error: billingAccountError } = await supabaseAdminClient
-    .from('billing_accounts')
-    .update({
-      status: 'past_due',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('stripe_subscription_id', subscriptionId);
-
-  if (billingAccountError) {
-    console.error('[billing:webhook] invoice.payment_failed billing_accounts update failed:', billingAccountError.message);
-    throw billingAccountError;
-  }
-
-  console.error(
-    `[billing:webhook] Payment failed - subscription ${subscriptionId} marked past_due`,
+    },
   );
+
+  console.error('[billing:webhook] payment failed; subscription marked past_due', {
+    eventId,
+    eventType: 'invoice.payment_failed',
+    subscriptionId,
+  });
 }
 
 async function handleInvoicePaymentActionRequired(
   invoice: Stripe.Invoice,
   supabaseAdminClient: typeof supabaseAdmin,
+  eventId: string,
 ) {
   const subscriptionId = getSubscriptionId(invoice.subscription);
   if (!subscriptionId) {
     console.log('[billing:webhook] invoice.payment_action_required without subscription, acknowledging', {
+      eventId,
+      eventType: 'invoice.payment_action_required',
       invoiceId: invoice.id,
     });
     return;
   }
 
   const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-  await upsertBillingAccountRow(
-    supabaseAdminClient,
-    subscription,
-    'invoice.payment_action_required',
-    `invoice.payment_action_required:${invoice.id}`,
-  );
 
   const organizationId = subscription.metadata?.organization_id ?? null;
   if (!organizationId) {
+    await upsertBillingAccountRow(
+      supabaseAdminClient,
+      subscription,
+      'invoice.payment_action_required',
+      eventId,
+    );
     console.log('[billing:webhook] invoice.payment_action_required without organization metadata, billing account only', {
+      eventId,
+      eventType: 'invoice.payment_action_required',
       invoiceId: invoice.id,
       subscriptionId: subscription.id,
       status: subscription.status,
@@ -692,22 +801,26 @@ async function handleInvoicePaymentActionRequired(
     return;
   }
 
-  const upsertResult = await upsertSubscriptionRow(
+  const upsertResult = await upsertMirroredSubscriptionState(
     supabaseAdminClient,
     subscription,
     organizationId,
     'invoice.payment_action_required',
-    `invoice.payment_action_required:${invoice.id}`,
+    eventId,
   );
 
   if (upsertResult.ignoredMissingOrganization) {
     console.log('[billing:webhook] invoice.payment_action_required skipped (organization missing)', {
+      eventId,
+      eventType: 'invoice.payment_action_required',
       organizationId,
       subscriptionId: subscription.id,
       status: subscription.status,
     });
   } else {
     console.log('[billing:webhook] invoice.payment_action_required upserted subscription', {
+      eventId,
+      eventType: 'invoice.payment_action_required',
       organizationId,
       subscriptionId: subscription.id,
       status: subscription.status,

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 // DEV ONLY ECHO. DO NOT ENABLE IN PROD.
 export const dynamic = 'force-dynamic';
@@ -30,7 +31,7 @@ function buildResponse(req: NextRequest, buf: Uint8Array) {
 }
 
 export async function POST(req: NextRequest) {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 
@@ -39,7 +40,7 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found' }, { status: 404 });
   }
 

@@ -1,11 +1,12 @@
 import { NextResponse } from 'next/server';
 import { renderScheduleReadyEmail } from '@/lib/emails/scheduleReadyEmail';
+import { isDebugAllowed } from '@/lib/debug/isDebugAllowed';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
 
 export async function GET() {
-  if (process.env.NODE_ENV === 'production') {
+  if (!isDebugAllowed()) {
     return NextResponse.json({ error: 'Not found.' }, { status: 404 });
   }
 
