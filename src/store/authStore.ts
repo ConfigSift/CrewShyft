@@ -618,6 +618,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         current_period_end: string | null;
         cancel_at_period_end: boolean;
       } | null;
+      has_per_org_billing?: boolean;
+      covered_org_count?: number;
+      uncovered_org_count?: number;
     }>(
       organizationId
         ? `/api/billing/subscription-status?organizationId=${organizationId}`
@@ -687,11 +690,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     set({ subscriptionStatus, subscriptionDetails });
 
-    // Set cookie for middleware
-    const normalizedRawStatus = String(rawStatus ?? '').trim().toLowerCase();
-    const hasCustomerLevelSubscription =
-      normalizedRawStatus === 'active' || normalizedRawStatus === 'trialing';
-    if (hasCustomerLevelSubscription) {
+    // Set cookie for middleware — use the API's `active` flag which accounts
+    // for both legacy bundled and per-org subscription coverage.
+    if (activeByQuantity) {
       setBillingCookie('active');
     } else {
       clearBillingCookie();

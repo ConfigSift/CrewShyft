@@ -252,9 +252,8 @@ function shouldRedirectToAppSubdomain(host: string, pathname: string) {
   return (isMarketingHost(host) && isAppRoute(pathname)) || (host === LOGIN_SUBDOMAIN && isAppRoute(pathname));
 }
 
-function shouldRedirectToLoginFromApp(host: string, pathname: string) {
-  // No longer redirect /login away from app.crewshyft.com — login must be
-  // served same-origin so Supabase session cookies persist correctly.
+/** @deprecated Login is now served same-origin on app.crewshyft.com. */
+function shouldRedirectToLoginFromApp() {
   return false;
 }
 
@@ -299,7 +298,7 @@ async function runMiddleware(req: NextRequest) {
       return createRedirect(buildHostRedirectUrl(req, APP_SUBDOMAIN, targetPath), 'host:to-app');
     }
 
-    if (shouldRedirectToLoginFromApp(host, originalPathname)) {
+    if (shouldRedirectToLoginFromApp()) {
       const targetPath = mapToLoginSubdomainPath(originalPathname);
       return createRedirect(buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, targetPath), 'host:app-to-login');
     }
@@ -413,6 +412,14 @@ async function runMiddleware(req: NextRequest) {
   }
 
   if (authEntryForGuards) {
+    // When on a non-app host (e.g. login.crewshyft.com), redirect directly to
+    // app.crewshyft.com so users don't land on login.crewshyft.com/dashboard.
+    if (!localOrPreviewHost && host !== APP_SUBDOMAIN) {
+      return redirectTo(
+        buildHostRedirectUrl(req, APP_SUBDOMAIN, APP_HOME_REDIRECT_PATH),
+        'auth:already-signed-in:cross-origin',
+      );
+    }
     return redirectTo(APP_HOME_REDIRECT_PATH, 'auth:already-signed-in');
   }
 

@@ -12,8 +12,10 @@ import {
   ExternalLink,
   FileText,
   Loader2,
+  Plus,
   Receipt,
   Settings,
+  Store,
   X,
   XCircle,
 } from 'lucide-react';
@@ -24,6 +26,23 @@ import type { InvoiceSummary } from '../api/billing/invoices/route';
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
 const BILLING_PORTAL_ERROR_MESSAGE =
   'We could not open the billing portal. Please try again in a moment.';
+
+type OrgSubscriptionSummary = {
+  organization_id: string;
+  organization_name: string;
+  status: string;
+  stripe_subscription_id: string | null;
+  stripe_price_id: string | null;
+  quantity: number;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  billing_mode: string;
+};
+
+type UncoveredOrg = {
+  organization_id: string;
+  organization_name: string;
+};
 
 type SubscriptionStatusSnapshot = {
   billingEnabled?: boolean;
@@ -41,6 +60,12 @@ type SubscriptionStatusSnapshot = {
     cancel_at_period_end?: boolean;
     status?: string;
   } | null;
+  // Per-org billing fields
+  org_subscriptions?: OrgSubscriptionSummary[];
+  has_per_org_billing?: boolean;
+  covered_org_count?: number;
+  uncovered_org_count?: number;
+  uncovered_orgs?: UncoveredOrg[];
 };
 
 /* ------------------------------------------------------------------ */
@@ -82,6 +107,22 @@ function isMissingBillingAccountError(message: string) {
     lowered.includes('no stripe billing identifiers found') ||
     lowered.includes('unable to resolve stripe customer id')
   );
+}
+
+function resolvePlanInterval(priceId: string | null | undefined): 'monthly' | 'annual' | 'unknown' {
+  if (!priceId) return 'unknown';
+  const monthlyPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_MONTHLY ?? '';
+  const annualPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_PRO_YEARLY ?? '';
+  if (monthlyPriceId && priceId === monthlyPriceId) return 'monthly';
+  if (annualPriceId && priceId === annualPriceId) return 'annual';
+  const lower = priceId.toLowerCase();
+  if (lower.includes('month')) return 'monthly';
+  if (lower.includes('year') || lower.includes('annual')) return 'annual';
+  return 'unknown';
+}
+
+function isActiveStatus(status: string) {
+  return status === 'active' || status === 'trialing';
 }
 
 /* ------------------------------------------------------------------ */
@@ -142,6 +183,130 @@ function InvoiceStatusChip({ status }: { status: string | null }) {
     );
   }
   return null;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Per-restaurant billing card                                       */
+/* ------------------------------------------------------------------ */
+
+function RestaurantBillingCard({
+  sub,
+  onManage,
+  portalLoading,
+}: {
+  sub: OrgSubscriptionSummary;
+  onManage: () => void;
+  portalLoading: boolean;
+}) {
+  const interval = resolvePlanInterval(sub.stripe_price_id);
+  const pricePerUnit = interval === 'annual' ? 199 : 19.99;
+  const intervalLabel = interval === 'annual' ? '/yr' : '/mo';
+  const planLabel = interval === 'annual' ? 'Annual' : interval === 'monthly' ? 'Monthly' : 'Pro';
+  const periodEnd = sub.current_period_end ? formatDateLong(sub.current_period_end) : null;
+
+  return (
+    <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden">
+      <div className="px-5 py-5 sm:px-6">
+        {/* Restaurant name + status */}
+        <div className="flex items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+              <Store className="w-4 h-4 text-amber-500" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-theme-primary leading-tight truncate">
+                {sub.organization_name}
+              </p>
+              <p className="text-[11px] text-theme-tertiary">CrewShyft Pro &middot; {planLabel}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <StatusBadge status={sub.status} />
+          </div>
+        </div>
+
+        {/* Cancellation warning */}
+        {sub.cancel_at_period_end && isActiveStatus(sub.status) && (
+          <div className="rounded-xl bg-amber-500/8 border border-amber-500/20 px-3 py-2 mb-3">
+            <p className="text-xs text-amber-500 font-medium">Cancels {periodEnd}</p>
+          </div>
+        )}
+
+        {/* Pricing */}
+        <div className="rounded-xl bg-theme-primary/[0.03] border border-theme-primary p-4">
+          <div className="flex items-baseline justify-between">
+            <span className="text-xs text-theme-tertiary">1 location</span>
+            <div className="text-right">
+              <span className="text-lg font-bold text-theme-primary tabular-nums tracking-tight">
+                ${pricePerUnit.toFixed(2)}
+              </span>
+              <span className="text-xs font-normal text-theme-tertiary ml-0.5">{intervalLabel}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Period end + manage */}
+        <div className="flex items-center justify-between mt-3">
+          {periodEnd && (
+            <p className="text-[11px] text-theme-muted">
+              {sub.cancel_at_period_end
+                ? `Access until ${periodEnd}`
+                : `Next invoice ${periodEnd}`}
+            </p>
+          )}
+          <button
+            onClick={onManage}
+            disabled={portalLoading}
+            className="text-[11px] text-amber-500 hover:text-amber-400 font-medium transition-colors disabled:opacity-50 ml-auto"
+          >
+            {portalLoading ? 'Opening...' : 'Manage'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function UncoveredOrgCard({
+  org,
+  onSubscribe,
+  loading,
+}: {
+  org: UncoveredOrg;
+  onSubscribe: () => void;
+  loading: boolean;
+}) {
+  return (
+    <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden border-dashed">
+      <div className="px-5 py-5 sm:px-6">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-8 h-8 rounded-lg bg-zinc-500/10 flex items-center justify-center shrink-0">
+              <Store className="w-4 h-4 text-zinc-400" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-theme-primary leading-tight truncate">
+                {org.organization_name}
+              </p>
+              <p className="text-[11px] text-theme-tertiary">No active subscription</p>
+            </div>
+          </div>
+          <button
+            onClick={onSubscribe}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-amber-500 hover:bg-amber-600 rounded-lg transition-colors disabled:opacity-50 shrink-0"
+          >
+            {loading ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <Plus className="w-3.5 h-3.5" />
+            )}
+            Subscribe
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -494,6 +659,8 @@ export default function BillingClient() {
     })();
   }, [snapshotOwnedCount, snapshotQuantity, loadSubscriptionSnapshot, router]);
 
+  const [subscribingOrgId, setSubscribingOrgId] = useState<string | null>(null);
+
   /* ---- handlers ---- */
 
   const handleManageBilling = async () => {
@@ -530,6 +697,31 @@ export default function BillingClient() {
     setPortalLoading(false);
   };
 
+  const handleSubscribeOrg = async (organizationId: string) => {
+    setError('');
+    setSubscribingOrgId(organizationId);
+    const result = await apiFetch<{ checkoutUrl?: string; clientSecret?: string }>(
+      '/api/billing/create-checkout-session',
+      {
+        method: 'POST',
+        json: {
+          organizationId,
+          priceType: 'monthly',
+          flow: 'subscribe',
+          uiMode: 'redirect',
+        },
+      },
+    );
+
+    if (result.ok && result.data?.checkoutUrl) {
+      window.location.href = result.data.checkoutUrl;
+      return;
+    }
+
+    setError(result.error || 'Could not start checkout. Please try again.');
+    setSubscribingOrgId(null);
+  };
+
   /* ---- loading state ---- */
 
   if (!isInitialized || snapshotLoading || subscriptionStatus === 'loading') {
@@ -545,6 +737,14 @@ export default function BillingClient() {
   /* ---- derived values ---- */
 
   const details = subscriptionDetails;
+  const currentStatus = details?.status ?? subscriptionStatus ?? 'none';
+
+  // Per-org billing data from the snapshot
+  const orgSubs = statusSnapshot?.org_subscriptions ?? [];
+  const uncoveredOrgs = statusSnapshot?.uncovered_orgs ?? [];
+  const hasPerOrgData = orgSubs.length > 0 || uncoveredOrgs.length > 0;
+
+  // Legacy bundled values (only used when no per-org data)
   const planLabel =
     details?.planInterval === 'monthly'
       ? 'Monthly'
@@ -560,7 +760,12 @@ export default function BillingClient() {
   const totalPrice = (pricePerUnit * Math.max(1, quantity)).toFixed(2);
   const periodEndIso = details?.currentPeriodEnd ?? statusSnapshot?.current_period_end ?? null;
   const periodEnd = periodEndIso ? formatDateLong(periodEndIso) : null;
-  const currentStatus = details?.status ?? subscriptionStatus ?? 'none';
+
+  // Check if any org sub has past_due
+  const anyPastDue =
+    noticeParam === 'past_due' ||
+    currentStatus === 'past_due' ||
+    orgSubs.some((s) => s.status === 'past_due');
 
   /* ---- render ---- */
 
@@ -609,16 +814,7 @@ export default function BillingClient() {
           </div>
         )}
 
-        {details?.cancelAtPeriodEnd && (
-          <div className="rounded-xl bg-amber-500/8 border border-amber-500/20 px-4 py-3">
-            <p className="text-sm text-amber-500 font-medium">Cancellation scheduled</p>
-            <p className="text-xs text-amber-400/80 mt-0.5">
-              Your subscription ends {periodEnd}. Use Manage to reactivate.
-            </p>
-          </div>
-        )}
-
-        {(currentStatus === 'past_due' || noticeParam === 'past_due') && (
+        {anyPastDue && (
           <div className="rounded-xl bg-red-500/8 border border-red-500/20 px-4 py-3">
             <p className="text-sm font-medium text-red-400">Payment past due</p>
             <p className="text-xs text-red-400/70 mt-0.5">
@@ -627,59 +823,104 @@ export default function BillingClient() {
           </div>
         )}
 
-        {/* ---- Plan card ---- */}
-        <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden">
-          <div className="px-5 py-5 sm:px-6">
-            {/* Plan name + status row */}
-            <div className="flex items-center justify-between gap-3 mb-4">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
-                  <Crown className="w-4 h-4 text-amber-500" />
-                </div>
-                <div>
-                  <p className="text-sm font-bold text-theme-primary leading-tight">
-                    CrewShyft Pro
-                  </p>
-                  <p className="text-[11px] text-theme-tertiary">{planLabel}</p>
-                </div>
-              </div>
-              <StatusBadge status={currentStatus} />
-            </div>
-
-            {/* Pricing breakdown */}
-            <div className="rounded-xl bg-theme-primary/[0.03] border border-theme-primary p-4">
-              <div className="flex items-baseline justify-between">
-                <span className="text-xs text-theme-tertiary">
-                  {quantity} location{quantity !== 1 ? 's' : ''}
-                </span>
-                <span className="text-xs text-theme-secondary tabular-nums">
-                  ${pricePerUnit.toFixed(2)}{interval} each
-                </span>
-              </div>
-
-              <div className="mt-3 pt-3 border-t border-theme-primary flex items-baseline justify-between">
-                <span className="text-xs font-medium text-theme-secondary">
-                  {details?.cancelAtPeriodEnd ? 'Final charge' : 'Total'}
-                </span>
-                <div className="text-right">
-                  <span className="text-xl font-bold text-theme-primary tabular-nums tracking-tight">
-                    ${totalPrice}
-                  </span>
-                  <span className="text-xs font-normal text-theme-tertiary ml-0.5">{interval}</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Next invoice / period end */}
-            {periodEnd && (
-              <p className="text-[11px] text-theme-muted mt-3">
-                {details?.cancelAtPeriodEnd
-                  ? `Access continues until ${periodEnd}`
-                  : `Next invoice ${periodEnd}`}
+        {/* ---- Per-restaurant billing cards ---- */}
+        {hasPerOrgData ? (
+          <>
+            {/* Section header */}
+            <div className="flex items-center gap-2">
+              <Crown className="w-4 h-4 text-amber-500" />
+              <p className="text-xs font-semibold text-theme-secondary uppercase tracking-wider">
+                Restaurant Subscriptions
               </p>
+              <span className="text-[11px] text-theme-muted tabular-nums ml-auto">
+                {orgSubs.filter((s) => isActiveStatus(s.status)).length} of{' '}
+                {orgSubs.length + uncoveredOrgs.length} active
+              </span>
+            </div>
+
+            {/* Active/managed org subscription cards */}
+            {orgSubs.map((sub) => (
+              <RestaurantBillingCard
+                key={sub.organization_id}
+                sub={sub}
+                onManage={handleManageBilling}
+                portalLoading={portalLoading}
+              />
+            ))}
+
+            {/* Uncovered org cards */}
+            {uncoveredOrgs.map((org) => (
+              <UncoveredOrgCard
+                key={org.organization_id}
+                org={org}
+                onSubscribe={() => handleSubscribeOrg(org.organization_id)}
+                loading={subscribingOrgId === org.organization_id}
+              />
+            ))}
+          </>
+        ) : (
+          <>
+            {/* ---- Legacy bundled plan card ---- */}
+            {details?.cancelAtPeriodEnd && (
+              <div className="rounded-xl bg-amber-500/8 border border-amber-500/20 px-4 py-3">
+                <p className="text-sm text-amber-500 font-medium">Cancellation scheduled</p>
+                <p className="text-xs text-amber-400/80 mt-0.5">
+                  Your subscription ends {periodEnd}. Use Manage to reactivate.
+                </p>
+              </div>
             )}
-          </div>
-        </div>
+
+            <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden">
+              <div className="px-5 py-5 sm:px-6">
+                <div className="flex items-center justify-between gap-3 mb-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
+                      <Crown className="w-4 h-4 text-amber-500" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-theme-primary leading-tight">
+                        CrewShyft Pro
+                      </p>
+                      <p className="text-[11px] text-theme-tertiary">{planLabel}</p>
+                    </div>
+                  </div>
+                  <StatusBadge status={currentStatus} />
+                </div>
+
+                <div className="rounded-xl bg-theme-primary/[0.03] border border-theme-primary p-4">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-xs text-theme-tertiary">
+                      {quantity} location{quantity !== 1 ? 's' : ''}
+                    </span>
+                    <span className="text-xs text-theme-secondary tabular-nums">
+                      ${pricePerUnit.toFixed(2)}{interval} each
+                    </span>
+                  </div>
+
+                  <div className="mt-3 pt-3 border-t border-theme-primary flex items-baseline justify-between">
+                    <span className="text-xs font-medium text-theme-secondary">
+                      {details?.cancelAtPeriodEnd ? 'Final charge' : 'Total'}
+                    </span>
+                    <div className="text-right">
+                      <span className="text-xl font-bold text-theme-primary tabular-nums tracking-tight">
+                        ${totalPrice}
+                      </span>
+                      <span className="text-xs font-normal text-theme-tertiary ml-0.5">{interval}</span>
+                    </div>
+                  </div>
+                </div>
+
+                {periodEnd && (
+                  <p className="text-[11px] text-theme-muted mt-3">
+                    {details?.cancelAtPeriodEnd
+                      ? `Access continues until ${periodEnd}`
+                      : `Next invoice ${periodEnd}`}
+                  </p>
+                )}
+              </div>
+            </div>
+          </>
+        )}
 
         {/* ---- Invoice history ---- */}
         <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden">

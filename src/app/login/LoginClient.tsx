@@ -10,6 +10,7 @@ import { getAuthCallbackUrl, getSiteUrl } from '../../lib/site-url';
 import { TransitionScreen } from '../../components/auth/TransitionScreen';
 import { normalizePersona, readStoredPersona } from '@/lib/persona';
 import { resolvePostAuthDestination } from '@/lib/authRedirect';
+import { getAppBase } from '@/lib/routing/getBaseUrls';
 
 type LoginClientProps = {
   notice?: string | null;
@@ -31,6 +32,22 @@ function resolvePersona(value: unknown) {
 
 function pathMatchesPrefix(pathname: string, prefix: string) {
   return pathname === prefix || pathname.startsWith(`${prefix}/`);
+}
+
+/**
+ * Navigate to a path on the app domain. Uses window.location for cross-origin
+ * transitions (e.g. login.crewshyft.com -> app.crewshyft.com) because
+ * router.replace() is a same-origin SPA navigation that never leaves the
+ * current host.
+ */
+function navigateToApp(path: string, router: ReturnType<typeof useRouter>) {
+  const appBase = getAppBase(window.location.host);
+  const currentOrigin = window.location.origin;
+  if (currentOrigin === appBase) {
+    router.replace(path);
+  } else {
+    window.location.href = `${appBase}${path}`;
+  }
 }
 
 function sanitizeNextPath(candidate?: string | null): string | null {
@@ -76,18 +93,18 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
 
     // If login was triggered from a protected page, return there after auth.
     if (safeNextPath) {
-      router.replace(safeNextPath);
+      navigateToApp(safeNextPath, router);
       return;
     }
 
     const persona = resolvePersona(currentUser?.persona);
     if (!persona) {
-      router.replace('/persona');
+      navigateToApp('/persona', router);
       return;
     }
 
     const destination = resolvePostAuthDestination(accessibleRestaurants.length, currentUser?.role, persona);
-    router.replace(destination);
+    navigateToApp(destination, router);
   }, [currentUser, accessibleRestaurants, router, safeNextPath]);
 
   const isPasscodeValid = passcode.trim().length >= 6;
@@ -131,13 +148,13 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
       } = useAuthStore.getState();
 
       if (safeNextPath) {
-        router.replace(safeNextPath);
+        navigateToApp(safeNextPath, router);
         return;
       }
 
       const persona = resolvePersona(refreshedUser?.persona);
       if (!persona) {
-        router.replace('/persona');
+        navigateToApp('/persona', router);
         return;
       }
 
@@ -150,7 +167,7 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
         refreshedUser?.role,
         persona,
       );
-      router.replace(destination);
+      navigateToApp(destination, router);
       return;
     } catch {
       setError('Login failed.');

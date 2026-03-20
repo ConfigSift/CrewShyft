@@ -219,6 +219,18 @@ export async function GET(request: NextRequest) {
     );
   }
 
+  // ── Fetch org names for the response ──
+  let orgNamesMap: Record<string, string> = {};
+  if (ownedResult.ids.length > 0) {
+    const { data: orgRows } = await supabaseAdmin
+      .from('organizations')
+      .select('id,name')
+      .in('id', ownedResult.ids);
+    if (orgRows) {
+      orgNamesMap = Object.fromEntries(orgRows.map((r: { id: string; name: string }) => [r.id, r.name]));
+    }
+  }
+
   // ── Dual-read: per-org subscriptions first, billing_accounts fallback ──
   // Check if owned orgs have per-org subscriptions in the subscriptions table.
   const orgCoverage = await checkOrgsCoverage(ownedResult.ids, supabaseAdmin);
@@ -281,6 +293,7 @@ export async function GET(request: NextRequest) {
   // Build per-org subscription summary for the response.
   const orgSubscriptions = orgCoverage.subscriptions.map((sub) => ({
     organization_id: sub.organization_id,
+    organization_name: orgNamesMap[sub.organization_id] ?? 'Restaurant',
     status: sub.status,
     stripe_subscription_id: sub.stripe_subscription_id,
     stripe_price_id: sub.stripe_price_id,
@@ -288,6 +301,12 @@ export async function GET(request: NextRequest) {
     current_period_end: sub.current_period_end,
     cancel_at_period_end: sub.cancel_at_period_end,
     billing_mode: sub.billing_mode,
+  }));
+
+  // Build list of uncovered orgs (no active subscription).
+  const uncoveredOrgs = orgCoverage.uncoveredOrgIds.map((id) => ({
+    organization_id: id,
+    organization_name: orgNamesMap[id] ?? 'Restaurant',
   }));
 
   if (hasNextRedirect) {
@@ -342,11 +361,12 @@ export async function GET(request: NextRequest) {
       owned_org_count: ownedOrgCount,
       required_quantity: requiredQuantity,
       over_limit: overLimit,
-      // Per-org billing data (new)
+      // Per-org billing data
       org_subscriptions: orgSubscriptions,
       has_per_org_billing: hasAnyPerOrgSub,
       covered_org_count: orgCoverage.coveredOrgIds.length,
       uncovered_org_count: orgCoverage.uncoveredOrgIds.length,
+      uncovered_orgs: uncoveredOrgs,
     }),
     response,
     active,
