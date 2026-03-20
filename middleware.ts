@@ -218,7 +218,11 @@ function cloneSupabaseCookies(source: NextResponse, target: NextResponse) {
 }
 
 function buildLoginRedirectUrl(req: NextRequest, localOrPreviewHost: boolean, nextPath: string) {
-  const loginUrl = localOrPreviewHost
+  // Keep auth redirects same-origin when the request is already on app.crewshyft.com
+  // so Supabase session cookies are preserved on the same host.
+  const host = normalizeHost(req.headers.get('host'));
+  const sameOrigin = localOrPreviewHost || host === APP_SUBDOMAIN;
+  const loginUrl = sameOrigin
     ? new URL('/login', req.url)
     : buildHostRedirectUrl(req, LOGIN_SUBDOMAIN, '/login');
   // Clear any inherited query from the source URL; only carry intent via `next`.
@@ -249,7 +253,9 @@ function shouldRedirectToAppSubdomain(host: string, pathname: string) {
 }
 
 function shouldRedirectToLoginFromApp(host: string, pathname: string) {
-  return host === APP_SUBDOMAIN && isLoginRoute(pathname);
+  // No longer redirect /login away from app.crewshyft.com — login must be
+  // served same-origin so Supabase session cookies persist correctly.
+  return false;
 }
 
 async function runMiddleware(req: NextRequest) {
