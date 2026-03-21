@@ -23,6 +23,7 @@ export interface RestaurantRow {
   ownerAuthUserId: string | null;
   ownerName: string | null;
   subscriptionStatus: string | null;
+  billingOverrideType: string | null;
   currentPeriodEnd: string | null;
   cancelAtPeriodEnd: boolean | null;
   priceId: string | null;

@@ -51,6 +51,10 @@ type OrgSubscriptionEntry = {
   status: string;
   cancel_at_period_end: boolean;
   current_period_end: string | null;
+  billing_source?: 'stripe' | 'override' | string;
+  billing_override_type?: string | null;
+  billing_override_reason?: string | null;
+  billing_override_expires_at?: string | null;
 };
 
 type SubscriptionSnapshot = {
@@ -274,6 +278,10 @@ export default function RestaurantSelectPage() {
   }) => {
     return isResumableRestaurantFromSnapshot(restaurant, billingSnapshot);
   }, [billingSnapshot, isResumableRestaurantFromSnapshot]);
+
+  const isBillingOverrideEntry = useCallback((entry: OrgSubscriptionEntry | null | undefined) => {
+    return Boolean(String(entry?.billing_override_type ?? '').trim());
+  }, []);
 
   useEffect(() => {
     if (!activeRestaurantId) return;
@@ -567,7 +575,6 @@ export default function RestaurantSelectPage() {
                   const role = String(restaurant.role ?? '').trim().toLowerCase();
                   return role === 'admin';
                 })();
-
                 return (
                   <div
                     key={restaurant.id}
@@ -853,7 +860,9 @@ export default function RestaurantSelectPage() {
             const orgSub = billingSnapshot?.org_subscriptions?.find(
               (s) => s.organization_id === deleteTarget?.id,
             );
-            const isActive = orgSub && (orgSub.status === 'active' || orgSub.status === 'trialing');
+            const isActive = orgSub
+              && !isBillingOverrideEntry(orgSub)
+              && (orgSub.status === 'active' || orgSub.status === 'trialing');
             if (!isActive) return null;
             return (
               <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">

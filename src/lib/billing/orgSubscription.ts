@@ -8,6 +8,7 @@
 import { type PostgrestError, type SupabaseClient } from '@supabase/supabase-js';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import { isActiveBillingStatus } from '@/lib/billing/customer';
+import { getOrganizationBillingOverride, getOrganizationBillingOverrides, type ActiveBillingOverride } from '@/lib/billing/override';
 
 export type OrgSubscriptionRow = {
   id: string;
@@ -49,18 +50,33 @@ export async function getOrgSubscription(
 export async function isOrgSubscriptionActive(
   organizationId: string,
   supabaseClient: SupabaseClient = supabaseAdmin,
-): Promise<{ active: boolean; subscription: OrgSubscriptionRow | null; error: PostgrestError | null }> {
-  const result = await getOrgSubscription(organizationId, supabaseClient);
-  if (result.error) {
-    return { active: false, subscription: null, error: result.error };
+): Promise<{
+  active: boolean;
+  subscription: OrgSubscriptionRow | null;
+  billingOverride: ActiveBillingOverride | null;
+  error: PostgrestError | null;
+}> {
+  const [subscriptionResult, overrideResult] = await Promise.all([
+    getOrgSubscription(organizationId, supabaseClient),
+    getOrganizationBillingOverride(organizationId, supabaseClient),
+  ]);
+
+  if (subscriptionResult.error) {
+    return { active: false, subscription: null, billingOverride: null, error: subscriptionResult.error };
   }
-  if (!result.data) {
-    return { active: false, subscription: null, error: null };
+  if (overrideResult.error) {
+    return { active: false, subscription: null, billingOverride: null, error: overrideResult.error };
   }
+
+  const active = Boolean(overrideResult.data) || Boolean(
+    subscriptionResult.data && isActiveBillingStatus(subscriptionResult.data.status),
+  );
+
   return {
-    active: isActiveBillingStatus(result.data.status),
-    subscription: result.data,
-    error: null,
+    active,
+    subscription: subscriptionResult.data,
+    billingOverride: overrideResult.data,
+    error: null as PostgrestError | null,
   };
 }
 
@@ -91,27 +107,43 @@ export async function checkOrgsCoverage(
   coveredOrgIds: string[];
   uncoveredOrgIds: string[];
   subscriptions: OrgSubscriptionRow[];
+  billingOverrides: ActiveBillingOverride[];
   error: PostgrestError | null;
 }> {
   if (organizationIds.length === 0) {
-    return { coveredOrgIds: [], uncoveredOrgIds: [], subscriptions: [], error: null };
+    return { coveredOrgIds: [], uncoveredOrgIds: [], subscriptions: [], billingOverrides: [], error: null };
   }
 
-  const { data, error } = await supabaseClient
-    .from('subscriptions')
-    .select('*')
-    .in('organization_id', organizationIds);
+  const [{ data, error }, overrideResult] = await Promise.all([
+    supabaseClient
+      .from('subscriptions')
+      .select('*')
+      .in('organization_id', organizationIds),
+    getOrganizationBillingOverrides(organizationIds, supabaseClient),
+  ]);
 
   if (error) {
-    return { coveredOrgIds: [], uncoveredOrgIds: organizationIds, subscriptions: [], error };
+    return { coveredOrgIds: [], uncoveredOrgIds: organizationIds, subscriptions: [], billingOverrides: [], error };
+  }
+
+  if (overrideResult.error) {
+    return { coveredOrgIds: [], uncoveredOrgIds: organizationIds, subscriptions: [], billingOverrides: [], error: overrideResult.error };
   }
 
   const rows = (data as OrgSubscriptionRow[] | null) ?? [];
-  const coveredOrgIds = rows
+  const subscriptionCoveredOrgIds = rows
     .filter((row) => isActiveBillingStatus(row.status))
     .map((row) => row.organization_id);
+  const overrideCoveredOrgIds = overrideResult.data.map((override) => override.organization_id);
+  const coveredOrgIds = Array.from(new Set([...subscriptionCoveredOrgIds, ...overrideCoveredOrgIds]));
   const coveredSet = new Set(coveredOrgIds);
   const uncoveredOrgIds = organizationIds.filter((id) => !coveredSet.has(id));
 
-  return { coveredOrgIds, uncoveredOrgIds, subscriptions: rows, error: null };
+  return {
+    coveredOrgIds,
+    uncoveredOrgIds,
+    subscriptions: rows,
+    billingOverrides: overrideResult.data,
+    error: null,
+  };
 }

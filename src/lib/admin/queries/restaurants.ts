@@ -27,6 +27,7 @@ type OrgBaseRow = {
   name: string | null;
   restaurant_code: string | null;
   timezone?: string | null;
+  billing_override_type?: string | null;
   created_at: string;
 };
 
@@ -227,6 +228,7 @@ export async function getRestaurantsList(
       ownerAuthUserId: owner?.authUserId ?? null,
       ownerName: owner?.ownerName ?? null,
       subscriptionStatus: sub?.status ?? null,
+      billingOverrideType: String(org.billing_override_type ?? '').trim() || null,
       currentPeriodEnd: sub?.current_period_end ?? null,
       cancelAtPeriodEnd: sub?.cancel_at_period_end ?? null,
       priceId: sub?.stripe_price_id ?? null,
@@ -282,8 +284,8 @@ async function fetchOrganizationsPage(
       .from('organizations')
       .select(
         withTimezone
-          ? 'id, name, restaurant_code, timezone, created_at'
-          : 'id, name, restaurant_code, created_at',
+          ? 'id, name, restaurant_code, timezone, billing_override_type, created_at'
+          : 'id, name, restaurant_code, billing_override_type, created_at',
         { count: 'exact' },
       );
 

@@ -9,6 +9,7 @@ import { getUserRole } from '../utils/role';
 import { normalizeUserRow } from '../utils/userMapper';
 import { apiFetch } from '../lib/apiClient';
 import { normalizePersona, readStoredPersona } from '@/lib/persona';
+import { BILLING_COOKIE_NAME, serializeBillingCookie } from '@/lib/billing/cookie';
 
 interface PendingInvitation {
   id: string;
@@ -420,16 +421,18 @@ async function ensureCompletedManagerSetupProfile(
 }
 
 /** Set a short-lived cookie that middleware checks to avoid DB queries */
-function setBillingCookie(status: string) {
+function setBillingCookie(status: string, validUntil: string | null = null) {
   if (typeof document === 'undefined') return;
-  // 1-hour TTL cookie; middleware uses this as a lightweight signal
-  const maxAge = 3600;
-  document.cookie = `sf_billing_ok=${status}; path=/; max-age=${maxAge}; SameSite=Lax`;
+  const cookie = serializeBillingCookie({
+    status: status === 'past_due' ? 'past_due' : 'active',
+    validUntil,
+  });
+  document.cookie = `${BILLING_COOKIE_NAME}=${cookie.value}; path=/; max-age=${cookie.maxAge}; SameSite=Lax`;
 }
 
 function clearBillingCookie() {
   if (typeof document === 'undefined') return;
-  document.cookie = 'sf_billing_ok=; path=/; max-age=0; SameSite=Lax';
+  document.cookie = `${BILLING_COOKIE_NAME}=; path=/; max-age=0; SameSite=Lax`;
 }
 
 /** Determine plan interval from Stripe price ID */
@@ -801,6 +804,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       over_limit?: boolean;
       owned_org_count?: number;
       required_quantity?: number;
+      billing_cookie_expires_at?: string | null;
       status: string;
       subscription: {
         stripe_price_id: string | null;
@@ -835,6 +839,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       over_limit: overLimitRaw,
       owned_org_count: ownedOrgCountRaw,
       required_quantity: requiredQuantityRaw,
+      billing_cookie_expires_at: billingCookieExpiresAt,
     } = result.data;
     const overLimit = Boolean(overLimitRaw);
     const ownedOrgCount = Math.max(0, Number(ownedOrgCountRaw ?? 0));
@@ -895,7 +900,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     // Set cookie for middleware — use the API's `active` flag which accounts
     // for both legacy bundled and per-org subscription coverage.
     if (activeByQuantity) {
-      setBillingCookie('active');
+      setBillingCookie('active', billingCookieExpiresAt ?? null);
     } else {
       clearBillingCookie();
     }

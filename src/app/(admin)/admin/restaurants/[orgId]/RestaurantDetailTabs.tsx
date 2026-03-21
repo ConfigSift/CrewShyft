@@ -541,6 +541,13 @@ type SubscriptionPayload = {
     cancelAtPeriodEnd: boolean;
     currentPeriodEnd: string | null;
   } | null;
+  billingOverride: {
+    active: boolean;
+    type: string | null;
+    reason: string | null;
+    expiresAt: string | null;
+    setBy: string | null;
+  } | null;
 };
 
 function SubscriptionTab({ orgId }: { orgId: string }) {
@@ -548,11 +555,80 @@ function SubscriptionTab({ orgId }: { orgId: string }) {
     orgId,
     'subscription',
   );
+  const [overrideType, setOverrideType] = useState<'comped' | 'manual_exception'>('comped');
+  const [overrideReason, setOverrideReason] = useState('');
+  const [overrideExpiresAt, setOverrideExpiresAt] = useState('');
+  const [overrideSubmitting, setOverrideSubmitting] = useState(false);
+  const [overrideError, setOverrideError] = useState<string | null>(null);
   if (loading) return <TabSpinner />;
   if (error) return <AdminFetchError message="Failed to load subscription" detail={error} onRetry={retry} />;
 
   const sub = data?.subscription;
   const billing = data?.billingAccount;
+  const billingOverride = data?.billingOverride ?? null;
+
+  useEffect(() => {
+    if (!billingOverride?.active) {
+      setOverrideType('comped');
+      setOverrideReason('');
+      setOverrideExpiresAt('');
+      return;
+    }
+    setOverrideType(billingOverride.type === 'manual_exception' ? 'manual_exception' : 'comped');
+    setOverrideReason(billingOverride.reason ?? '');
+    setOverrideExpiresAt(toDateTimeLocalValue(billingOverride.expiresAt));
+  }, [billingOverride]);
+
+  const saveOverride = async () => {
+    setOverrideSubmitting(true);
+    setOverrideError(null);
+    try {
+      const res = await fetch(`/api/organizations/${orgId}/billing-override`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          active: true,
+          type: overrideType,
+          reason: overrideReason.trim() || null,
+          expiresAt: overrideExpiresAt || null,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        setOverrideError(body?.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      await retry();
+    } catch {
+      setOverrideError('Network error — could not save billing override.');
+    } finally {
+      setOverrideSubmitting(false);
+    }
+  };
+
+  const removeOverride = async () => {
+    setOverrideSubmitting(true);
+    setOverrideError(null);
+    try {
+      const res = await fetch(`/api/organizations/${orgId}/billing-override`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active: false }),
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null) as { error?: string } | null;
+        setOverrideError(body?.error ?? `Request failed (${res.status})`);
+        return;
+      }
+      await retry();
+    } catch {
+      setOverrideError('Network error — could not remove billing override.');
+    } finally {
+      setOverrideSubmitting(false);
+    }
+  };
 
   return (
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
@@ -618,6 +694,88 @@ function SubscriptionTab({ orgId }: { orgId: string }) {
           </dl>
         )}
       </Card>
+
+      <Card title="Billing Exception">
+        <div className="space-y-4">
+          <AdminBanner
+            variant="info"
+            message={billingOverride?.active
+              ? 'This restaurant is currently using an internal billing exception.'
+              : 'Grant CrewShyft-managed access without requiring customer-managed Stripe billing.'}
+          />
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Type</label>
+            <select
+              value={overrideType}
+              onChange={(e) => setOverrideType(e.target.value === 'manual_exception' ? 'manual_exception' : 'comped')}
+              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+            >
+              <option value="comped">Comped</option>
+              <option value="manual_exception">Billing Exception</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Reason</label>
+            <textarea
+              value={overrideReason}
+              onChange={(e) => setOverrideReason(e.target.value)}
+              rows={3}
+              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+              placeholder="Explain why this restaurant should bypass normal billing."
+            />
+          </div>
+
+          <div className="space-y-2">
+            <label className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Expires At</label>
+            <input
+              type="datetime-local"
+              value={overrideExpiresAt}
+              onChange={(e) => setOverrideExpiresAt(e.target.value)}
+              className="w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 focus:border-indigo-400 focus:outline-none focus:ring-2 focus:ring-indigo-100"
+            />
+            <p className="text-xs text-zinc-500">Leave blank to keep the override active until removed.</p>
+          </div>
+
+          {billingOverride?.active && (
+            <dl className="space-y-2 rounded-md border border-zinc-200 bg-zinc-50 p-3 text-sm">
+              <DetailRow
+                label="Current Status"
+                value={billingOverride.type === 'comped' ? 'Comped' : 'Billing Exception'}
+              />
+              <DetailRow label="Reason" value={billingOverride.reason || '—'} />
+              <DetailRow label="Expires" value={fmtDateTime(billingOverride.expiresAt)} />
+              <DetailRow label="Set By" value={billingOverride.setBy || '—'} mono />
+            </dl>
+          )}
+
+          {overrideError && (
+            <p className="text-sm text-red-600">{overrideError}</p>
+          )}
+
+          <div className="flex items-center justify-end gap-3">
+            {billingOverride?.active && (
+              <button
+                type="button"
+                onClick={removeOverride}
+                disabled={overrideSubmitting}
+                className="rounded-md border border-red-300 px-3 py-2 text-sm font-medium text-red-700 transition-colors hover:bg-red-50 disabled:opacity-50"
+              >
+                {overrideSubmitting ? 'Removing...' : 'Remove exception'}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={saveOverride}
+              disabled={overrideSubmitting}
+              className="rounded-md bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {overrideSubmitting ? 'Saving...' : billingOverride?.active ? 'Update exception' : 'Save exception'}
+            </button>
+          </div>
+        </div>
+      </Card>
     </div>
   );
 }
@@ -663,6 +821,21 @@ function fmtDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return isNaN(d.getTime()) ? '—' : d.toLocaleDateString();
+}
+
+function fmtDateTime(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '—' : d.toLocaleString();
+}
+
+function toDateTimeLocalValue(iso: string | null | undefined) {
+  const normalized = String(iso ?? '').trim();
+  if (!normalized) return '';
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return '';
+  const local = new Date(parsed.getTime() - parsed.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
 }
 
 // ---------------------------------------------------------------------------
@@ -771,4 +944,3 @@ function IntentCard({
     </div>
   );
 }
-

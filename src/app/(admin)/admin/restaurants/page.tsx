@@ -344,7 +344,14 @@ function RestaurantTableRow({ row }: { row: RestaurantRow }) {
         {row.ownerName ?? <span className="text-zinc-300">—</span>}
       </td>
       <td className="px-4 py-3">
-        <SubStatusBadge status={row.subscriptionStatus} />
+        <div className="flex items-center gap-2">
+          <SubStatusBadge status={row.subscriptionStatus} />
+          {row.billingOverrideType && (
+            <span className="inline-block rounded-full bg-sky-100 px-2 py-0.5 text-xs font-medium text-sky-700">
+              {row.billingOverrideType === 'comped' ? 'Comped' : 'Exception'}
+            </span>
+          )}
+        </div>
       </td>
       <td className="hidden lg:table-cell px-4 py-3 text-xs text-zinc-500">
         {row.currentPeriodEnd

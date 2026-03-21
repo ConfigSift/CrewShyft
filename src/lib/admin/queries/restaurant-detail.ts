@@ -77,6 +77,14 @@ export type BillingAccountDetail = {
   currentPeriodEnd: string | null;
 } | null;
 
+export type BillingOverrideDetail = {
+  active: boolean;
+  type: string | null;
+  reason: string | null;
+  expiresAt: string | null;
+  setBy: string | null;
+} | null;
+
 export type ProvisioningIntent = {
   id: string;
   authUserId: string;
@@ -528,6 +536,7 @@ export async function getRestaurantUsage(
 export async function getRestaurantSubscription(orgId: string): Promise<{
   subscription: SubscriptionDetail;
   billingAccount: BillingAccountDetail;
+  billingOverride: BillingOverrideDetail;
 }> {
   const db = getAdminSupabase();
 
@@ -551,6 +560,22 @@ export async function getRestaurantSubscription(orgId: string): Promise<{
         currentPeriodStart: subRow.current_period_start,
         currentPeriodEnd: subRow.current_period_end,
         cancelAtPeriodEnd: subRow.cancel_at_period_end,
+      }
+    : null;
+
+  const { data: orgRow } = await db
+    .from('organizations')
+    .select('billing_override_active,billing_override_type,billing_override_reason,billing_override_expires_at,billing_override_set_by')
+    .eq('id', orgId)
+    .maybeSingle();
+
+  const billingOverride: BillingOverrideDetail = orgRow
+    ? {
+        active: Boolean(orgRow.billing_override_active),
+        type: typeof orgRow.billing_override_type === 'string' ? orgRow.billing_override_type : null,
+        reason: typeof orgRow.billing_override_reason === 'string' ? orgRow.billing_override_reason : null,
+        expiresAt: typeof orgRow.billing_override_expires_at === 'string' ? orgRow.billing_override_expires_at : null,
+        setBy: typeof orgRow.billing_override_set_by === 'string' ? orgRow.billing_override_set_by : null,
       }
     : null;
 
@@ -587,7 +612,7 @@ export async function getRestaurantSubscription(orgId: string): Promise<{
     }
   }
 
-  return { subscription, billingAccount };
+  return { subscription, billingAccount, billingOverride };
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,12 @@ import { jsonError } from '@/lib/apiResponses';
 import { BILLING_ENABLED } from '@/lib/stripe/config';
 import { stripe } from '@/lib/stripe/server';
 import {
+  BILLING_COOKIE_MAX_AGE_SECONDS,
+  BILLING_COOKIE_NAME,
+  getEarliestBillingOverrideExpiry,
+  serializeBillingCookie,
+} from '@/lib/billing/cookie';
+import {
   getBillingAccountByAuthUserId,
   getOwnedOrganizationCount,
   getStripeCustomerIdForAuthUser,
@@ -11,14 +17,12 @@ import {
   refreshBillingAccountFromStripe,
   upsertBillingAccountFromSubscription,
 } from '@/lib/billing/customer';
-import { checkOrgsCoverage, getOrgSubscription, type OrgSubscriptionRow } from '@/lib/billing/orgSubscription';
+import { normalizeBillingOverrideType } from '@/lib/billing/override';
+import { checkOrgsCoverage, isOrgSubscriptionActive, type OrgSubscriptionRow } from '@/lib/billing/orgSubscription';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
 export const revalidate = 0;
-
-const BILLING_COOKIE_NAME = 'sf_billing_ok';
-const BILLING_COOKIE_MAX_AGE_SECONDS = 3600;
 const MANAGER_ROLE_VALUES = new Set(['admin', 'manager', 'owner', 'super_admin']);
 const EMPLOYEE_ROLE_VALUES = new Set(['employee', 'worker', 'staff', 'team_member']);
 
@@ -34,14 +38,15 @@ function sanitizeNextPath(value: string | null): string | null {
   return normalized;
 }
 
-function setBillingCookie(response: NextResponse, isActive: boolean) {
+function setBillingCookie(response: NextResponse, isActive: boolean, validUntil: string | null = null) {
   // NOTE: must NOT be httpOnly — authStore.ts manages this same cookie via document.cookie
   // (setBillingCookie / clearBillingCookie).  Making it httpOnly prevents JS from clearing
   // it on sign-out, which would leave a stale billing token across user sessions.
   if (isActive) {
-    response.cookies.set(BILLING_COOKIE_NAME, 'active', {
+    const cookie = serializeBillingCookie({ status: 'active', validUntil });
+    response.cookies.set(BILLING_COOKIE_NAME, cookie.value, {
       path: '/',
-      maxAge: BILLING_COOKIE_MAX_AGE_SECONDS,
+      maxAge: cookie.maxAge,
       sameSite: 'lax',
     });
     return;
@@ -58,9 +63,10 @@ function applyCookiesAndBillingState(
   target: NextResponse,
   source: NextResponse,
   isActive: boolean,
+  validUntil: string | null = null,
 ) {
   const responseWithCookies = applySupabaseCookies(target, source);
-  setBillingCookie(responseWithCookies, isActive);
+  setBillingCookie(responseWithCookies, isActive, validUntil);
   return responseWithCookies;
 }
 
@@ -92,6 +98,55 @@ function responseForDisabledBilling() {
     owned_org_count: 0,
     required_quantity: 0,
     over_limit: false,
+  };
+}
+
+function buildOrgCoverageSummary(params: {
+  organizationId: string;
+  organizationName: string;
+  subscription?: OrgSubscriptionRow | null;
+  billingOverride?: {
+    billing_override_type: string;
+    billing_override_reason: string | null;
+    billing_override_expires_at: string | null;
+  } | null;
+}) {
+  const { organizationId, organizationName, subscription, billingOverride } = params;
+  const overrideType = normalizeBillingOverrideType(billingOverride?.billing_override_type);
+  if (overrideType) {
+    return {
+      organization_id: organizationId,
+      organization_name: organizationName,
+      status: 'active',
+      stripe_subscription_id: subscription?.stripe_subscription_id ?? null,
+      stripe_price_id: subscription?.stripe_price_id ?? null,
+      quantity: 0,
+      current_period_end: subscription?.current_period_end ?? null,
+      cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
+      billing_mode: 'override',
+      billing_source: 'override',
+      billing_override_type: overrideType,
+      billing_override_reason: billingOverride?.billing_override_reason ?? null,
+      billing_override_expires_at: billingOverride?.billing_override_expires_at ?? null,
+    };
+  }
+
+  if (!subscription) return null;
+
+  return {
+    organization_id: organizationId,
+    organization_name: organizationName,
+    status: subscription.status,
+    stripe_subscription_id: subscription.stripe_subscription_id,
+    stripe_price_id: subscription.stripe_price_id,
+    quantity: subscription.quantity,
+    current_period_end: subscription.current_period_end,
+    cancel_at_period_end: subscription.cancel_at_period_end,
+    billing_mode: subscription.billing_mode,
+    billing_source: 'stripe',
+    billing_override_type: null,
+    billing_override_reason: null,
+    billing_override_expires_at: null,
   };
 }
 
@@ -170,28 +225,31 @@ export async function GET(request: NextRequest) {
       return applySupabaseCookies(jsonError('Access denied.', 403), response);
     }
 
-    const [orgSubResult, { data: orgRow }] = await Promise.all([
-      getOrgSubscription(organizationId, supabaseAdmin),
-      supabaseAdmin.from('organizations').select('name').eq('id', organizationId).maybeSingle(),
+    const [orgCoverageResult, { data: orgRow }] = await Promise.all([
+      isOrgSubscriptionActive(organizationId, supabaseAdmin),
+      supabaseAdmin
+        .from('organizations')
+        .select('name,restaurant_code')
+        .eq('id', organizationId)
+        .maybeSingle(),
     ]);
 
-    const sub = orgSubResult.data as OrgSubscriptionRow | null;
-    const orgName = (orgRow as { name?: string } | null)?.name ?? 'Restaurant';
-    const isActive = sub ? isActiveBillingStatus(sub.status) : false;
+    if (orgCoverageResult.error) {
+      return applySupabaseCookies(jsonError('Unable to check organization subscription.', 500), response);
+    }
 
-    const orgSubscriptions = sub
-      ? [{
-          organization_id: organizationId,
-          organization_name: orgName,
-          status: sub.status,
-          stripe_subscription_id: sub.stripe_subscription_id,
-          stripe_price_id: sub.stripe_price_id,
-          quantity: sub.quantity,
-          current_period_end: sub.current_period_end,
-          cancel_at_period_end: sub.cancel_at_period_end,
-          billing_mode: sub.billing_mode,
-        }]
-      : [];
+    const sub = orgCoverageResult.subscription as OrgSubscriptionRow | null;
+    const override = orgCoverageResult.billingOverride;
+    const orgName = (orgRow as { name?: string } | null)?.name ?? 'Restaurant';
+    const isActive = orgCoverageResult.active;
+    const orgSummary = buildOrgCoverageSummary({
+      organizationId,
+      organizationName: orgName,
+      subscription: sub,
+      billingOverride: override,
+    });
+    const orgSubscriptions = orgSummary ? [orgSummary] : [];
+    const billingCookieExpiresAt = override?.billing_override_expires_at ?? null;
 
     const uncoveredOrgs = !isActive
       ? [{ organization_id: organizationId, organization_name: orgName }]
@@ -203,6 +261,7 @@ export async function GET(request: NextRequest) {
           NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
           response,
           true,
+          billingCookieExpiresAt,
         );
       }
       return applyCookiesAndBillingState(
@@ -213,25 +272,27 @@ export async function GET(request: NextRequest) {
     }
 
     return applyCookiesAndBillingState(
-      NextResponse.json({
-        billingEnabled: true,
-        active: isActive,
-        status: sub?.status ?? 'none',
+        NextResponse.json({
+          billingEnabled: true,
+          active: isActive,
+        status: override ? 'active' : sub?.status ?? 'none',
         cancel_at_period_end: sub?.cancel_at_period_end ?? false,
-        current_period_end: sub?.current_period_end ?? null,
+        current_period_end: override?.billing_override_expires_at ?? sub?.current_period_end ?? null,
         subscription: null,
         owned_org_count: 1,
         required_quantity: 1,
         over_limit: false,
         org_subscriptions: orgSubscriptions,
         has_per_org_billing: Boolean(sub),
-        covered_org_count: isActive ? 1 : 0,
-        uncovered_org_count: isActive ? 0 : 1,
-        uncovered_orgs: uncoveredOrgs,
-      }),
-      response,
-      isActive,
-    );
+          covered_org_count: isActive ? 1 : 0,
+          uncovered_org_count: isActive ? 0 : 1,
+          uncovered_orgs: uncoveredOrgs,
+          billing_cookie_expires_at: billingCookieExpiresAt,
+        }),
+        response,
+        isActive,
+        billingCookieExpiresAt,
+      );
   }
 
   const [{ data: profileRows }, { data: memberships, count: membershipCount, error: membershipError }] = await Promise.all([
@@ -325,7 +386,8 @@ export async function GET(request: NextRequest) {
   let status: string;
   let overLimit: boolean;
   let account: Awaited<ReturnType<typeof getBillingAccountByAuthUserId>>['data'] = null;
-  const requiredQuantity = Math.max(1, ownedOrgCount);
+  const billableOwnedOrgCount = Math.max(0, ownedOrgCount - orgCoverage.billingOverrides.length);
+  const requiredQuantity = billableOwnedOrgCount === 0 ? 0 : Math.max(1, billableOwnedOrgCount);
 
   if (allOrgsCovered) {
     // All orgs have active subscriptions — user is fully covered.
@@ -372,17 +434,29 @@ export async function GET(request: NextRequest) {
   }
 
   // Build per-org subscription summary for the response.
-  const orgSubscriptions = orgCoverage.subscriptions.map((sub) => ({
-    organization_id: sub.organization_id,
-    organization_name: orgNamesMap[sub.organization_id] ?? 'Restaurant',
-    status: sub.status,
-    stripe_subscription_id: sub.stripe_subscription_id,
-    stripe_price_id: sub.stripe_price_id,
-    quantity: sub.quantity,
-    current_period_end: sub.current_period_end,
-    cancel_at_period_end: sub.cancel_at_period_end,
-    billing_mode: sub.billing_mode,
-  }));
+  const overrideByOrgId = new Map(
+    orgCoverage.billingOverrides.map((override) => [override.organization_id, override] as const),
+  );
+  const stripeOrgSubscriptions = orgCoverage.subscriptions
+    .map((sub) => buildOrgCoverageSummary({
+      organizationId: sub.organization_id,
+      organizationName: orgNamesMap[sub.organization_id] ?? 'Restaurant',
+      subscription: sub,
+      billingOverride: overrideByOrgId.get(sub.organization_id) ?? null,
+    }))
+    .filter(Boolean);
+  const overrideOrgSubscriptions = orgCoverage.billingOverrides
+    .filter((override) => !orgCoverage.subscriptions.some((sub) => sub.organization_id === override.organization_id))
+    .map((override) => buildOrgCoverageSummary({
+      organizationId: override.organization_id,
+      organizationName: override.organization_name ?? orgNamesMap[override.organization_id] ?? 'Restaurant',
+      billingOverride: override,
+    }))
+    .filter(Boolean);
+  const allOrgSubscriptions = [...stripeOrgSubscriptions, ...overrideOrgSubscriptions];
+  const billingCookieExpiresAt = getEarliestBillingOverrideExpiry(
+    orgCoverage.billingOverrides.map((override) => override.billing_override_expires_at),
+  );
 
   // Build list of uncovered orgs (no active subscription).
   const uncoveredOrgs = orgCoverage.uncoveredOrgIds.map((id) => ({
@@ -392,20 +466,22 @@ export async function GET(request: NextRequest) {
 
   if (hasNextRedirect) {
     if (isEmployeeLike && !isManagerLike) {
-      return applyCookiesAndBillingState(
-        NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
-        response,
-        true,
-      );
-    }
+        return applyCookiesAndBillingState(
+          NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+          response,
+          true,
+          billingCookieExpiresAt,
+        );
+      }
 
-    if (active) {
-      return applyCookiesAndBillingState(
-        NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
-        response,
-        true,
-      );
-    }
+      if (active) {
+        return applyCookiesAndBillingState(
+          NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+          response,
+          true,
+          billingCookieExpiresAt,
+        );
+      }
 
     if (isManagerLike) {
       return applyCookiesAndBillingState(
@@ -443,13 +519,15 @@ export async function GET(request: NextRequest) {
       required_quantity: requiredQuantity,
       over_limit: overLimit,
       // Per-org billing data
-      org_subscriptions: orgSubscriptions,
+      org_subscriptions: allOrgSubscriptions,
       has_per_org_billing: hasAnyPerOrgSub,
       covered_org_count: orgCoverage.coveredOrgIds.length,
       uncovered_org_count: orgCoverage.uncoveredOrgIds.length,
       uncovered_orgs: uncoveredOrgs,
+      billing_cookie_expires_at: billingCookieExpiresAt,
     }),
     response,
     active,
+    billingCookieExpiresAt,
   );
 }

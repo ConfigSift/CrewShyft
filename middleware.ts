@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@supabase/ssr';
+import { parseBillingCookie } from '@/lib/billing/cookie';
 
 const ROOT_DOMAIN = 'crewshyft.com';
 const WWW_DOMAIN = 'www.crewshyft.com';
@@ -462,15 +463,15 @@ async function runMiddleware(req: NextRequest) {
 
   const billingEnabled = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
   if (billingEnabled && !isBillingExempt(routeForGuards)) {
-    const billingCookie = req.cookies.get('sf_billing_ok')?.value;
+    const billingCookie = parseBillingCookie(req.cookies.get('sf_billing_ok')?.value);
 
-    if (!billingCookie) {
+    if (billingCookie.status === 'none' || billingCookie.stale) {
       const statusUrl = new URL('/api/billing/subscription-status', req.url);
       statusUrl.searchParams.set('next', `${originalPathname}${requestUrl.search}`);
       return redirectTo(statusUrl, 'billing:missing-cookie');
     }
 
-    if (billingCookie === 'past_due') {
+    if (billingCookie.status === 'past_due') {
       // past_due: redirect to billing rather than only setting a header that the UI may ignore.
       // NOTE: as of now no server path writes 'past_due' to this cookie — subscription-status
       // only writes 'active' or clears it, and authStore.ts only writes 'active'.

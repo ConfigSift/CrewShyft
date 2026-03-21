@@ -331,8 +331,10 @@ export async function POST(request: NextRequest) {
       return applySupabaseCookies(
         NextResponse.json(
           {
-            error: 'ORG_ALREADY_SUBSCRIBED',
-            message: 'This restaurant already has an active subscription.',
+            error: orgSubResult.billingOverride ? 'ORG_BILLING_OVERRIDE_ACTIVE' : 'ORG_ALREADY_SUBSCRIBED',
+            message: orgSubResult.billingOverride
+              ? 'This restaurant has an active billing exception.'
+              : 'This restaurant already has an active subscription.',
             redirect: '/billing',
           },
           { status: 409 },

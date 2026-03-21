@@ -37,6 +37,10 @@ type OrgSubscriptionSummary = {
   current_period_end: string | null;
   cancel_at_period_end: boolean;
   billing_mode: string;
+  billing_source?: 'stripe' | 'override' | string;
+  billing_override_type?: string | null;
+  billing_override_reason?: string | null;
+  billing_override_expires_at?: string | null;
 };
 
 type UncoveredOrg = {
@@ -125,11 +129,21 @@ function isActiveStatus(status: string) {
   return status === 'active' || status === 'trialing';
 }
 
+function hasBillingOverride(summary: {
+  billing_override_type?: string | null;
+}) {
+  return Boolean(String(summary.billing_override_type ?? '').trim());
+}
+
 /* ------------------------------------------------------------------ */
 /*  Sub-components                                                    */
 /* ------------------------------------------------------------------ */
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({
+  status,
+}: {
+  status: string;
+}) {
   if (status === 'active' || status === 'trialing') {
     return (
       <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-500/10 text-emerald-500 ring-1 ring-emerald-500/20">
@@ -210,7 +224,9 @@ function RestaurantBillingCard({
   const pricePerUnit = interval === 'annual' ? 199 : 19.99;
   const intervalLabel = interval === 'annual' ? '/yr' : '/mo';
   const planLabel = interval === 'annual' ? 'Annual' : interval === 'monthly' ? 'Monthly' : 'Pro';
-  const periodEnd = sub.current_period_end ? formatDateLong(sub.current_period_end) : null;
+  const isOverride = hasBillingOverride(sub);
+  const overrideExpiry = sub.billing_override_expires_at ? formatDateLong(sub.billing_override_expires_at) : null;
+  const stripePeriodEnd = sub.current_period_end ? formatDateLong(sub.current_period_end) : null;
 
   return (
     <div className="bg-theme-secondary border border-theme-primary rounded-2xl overflow-hidden">
@@ -222,7 +238,11 @@ function RestaurantBillingCard({
               <p className="text-sm font-bold text-theme-primary leading-tight truncate">
                 {sub.organization_name}
               </p>
-              <p className="text-[11px] text-theme-tertiary">CrewShyft Pro &middot; {planLabel}</p>
+              <p className="text-[11px] text-theme-tertiary">
+                {isOverride
+                  ? 'Billing managed by CrewShyft'
+                  : `CrewShyft Pro · ${planLabel}`}
+              </p>
             </div>
           </div>
           <div className="flex items-center gap-2 shrink-0">
@@ -230,37 +250,58 @@ function RestaurantBillingCard({
           </div>
         </div>
 
+        {isOverride ? (
+          <div className="rounded-xl bg-sky-500/8 border border-sky-400/20 px-3 py-3 mb-3 space-y-1.5">
+            <p className="text-xs font-semibold text-sky-300">
+              Billing for this restaurant is managed by CrewShyft.
+            </p>
+            {sub.cancel_at_period_end && stripePeriodEnd && (
+              <p className="text-[11px] text-theme-muted">
+                Stripe renewal is scheduled to stop on {stripePeriodEnd}.
+              </p>
+            )}
+            {!sub.cancel_at_period_end && (
+              <p className="text-[11px] text-theme-muted">
+                Contact CrewShyft support for billing changes.
+              </p>
+            )}
+          </div>
+        ) : null}
+
         {/* Cancellation warning */}
-        {sub.cancel_at_period_end && isActiveStatus(sub.status) && (
+        {!isOverride && sub.cancel_at_period_end && isActiveStatus(sub.status) && (
           <div className="rounded-xl bg-amber-500/8 border border-amber-500/20 px-3 py-2 mb-3">
-            <p className="text-xs text-amber-500 font-medium">Cancels {periodEnd}</p>
+            <p className="text-xs text-amber-500 font-medium">Cancels {stripePeriodEnd}</p>
           </div>
         )}
 
-        {/* Pricing */}
-        <div className="rounded-xl bg-theme-primary/[0.03] border border-theme-primary p-4">
-          <div className="flex items-baseline justify-between">
-            <span className="text-xs text-theme-tertiary">1 location</span>
-            <div className="text-right">
-              <span className="text-lg font-bold text-theme-primary tabular-nums tracking-tight">
-                ${pricePerUnit.toFixed(2)}
-              </span>
-              <span className="text-xs font-normal text-theme-tertiary ml-0.5">{intervalLabel}</span>
+        {!isOverride && (
+          <div className="rounded-xl bg-theme-primary/[0.03] border border-theme-primary p-4">
+            <div className="flex items-baseline justify-between">
+              <span className="text-xs text-theme-tertiary">1 location</span>
+              <div className="text-right">
+                <span className="text-lg font-bold text-theme-primary tabular-nums tracking-tight">
+                  ${pricePerUnit.toFixed(2)}
+                </span>
+                <span className="text-xs font-normal text-theme-tertiary ml-0.5">{intervalLabel}</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Period end + actions */}
         <div className="flex items-center justify-between mt-3">
-          {periodEnd && (
+          {(!isOverride && stripePeriodEnd) && (
             <p className="text-[11px] text-theme-muted">
               {sub.cancel_at_period_end
-                ? `Access until ${periodEnd}`
-                : `Next invoice ${periodEnd}`}
+                ? `Access until ${stripePeriodEnd}`
+                : `Next invoice ${stripePeriodEnd}`}
             </p>
           )}
           <div className="flex items-center gap-3 ml-auto">
-            {sub.cancel_at_period_end ? (
+            {isOverride ? (
+              <p className="text-[11px] text-sky-300 font-medium">Managed by CrewShyft</p>
+            ) : sub.cancel_at_period_end ? (
               <button
                 onClick={onReactivate}
                 disabled={reactivateLoading || portalLoading}
