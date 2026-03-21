@@ -28,12 +28,17 @@ import { useUIStore } from '../../store/uiStore';
 import { apiFetch } from '../../lib/apiClient';
 import { TransitionScreen } from '../../components/auth/TransitionScreen';
 import { supabase } from '@/lib/supabase/client';
+import {
+  clearOnboardingDraft,
+  loadOnboardingDraft,
+  mergeOnboardingDraft,
+} from '@/lib/onboardingDraft';
 
 /* ------------------------------------------------------------------ */
 /* Types & constants                                                   */
 /* ------------------------------------------------------------------ */
 
-type OnboardingRole = 'manager' | null;
+type OnboardingRole = 'manager';
 type ManagerStep = 1 | 2 | 3;
 type PlanId = 'monthly' | 'annual';
 type SupportedCurrency = 'USD' | 'CAD' | 'EUR' | 'GBP' | 'AUD' | 'JPY' | 'BRL' | 'MXN' | 'SGD';
@@ -223,14 +228,6 @@ const SUBSCRIPTION_PLANS = [
   },
 ];
 
-type OnboardingSessionState = {
-  organizationId?: string;
-  restaurantCode?: string;
-  ownerName?: string;
-  currency?: SupportedCurrency;
-};
-
-const SESSION_KEY = 'crewshyft_onboarding';
 const STAFF_DRAFTS_KEY_PREFIX = 'crewshyft_setup_staff_drafts:';
 const FINALIZE_TIMEOUT_MS = 12_000;
 const STRIPE_PUBLISHABLE_KEY = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY ?? '';
@@ -262,27 +259,6 @@ function buildUniformHours(openTime: string, closeTime: string): DayHoursRow[] {
     closeTime,
     enabled: true,
   }));
-}
-
-function saveSession(data: OnboardingSessionState) {
-  try {
-    const current = loadSession();
-    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ ...current, ...data }));
-  } catch { /* ignore */ }
-}
-
-function loadSession(): OnboardingSessionState {
-  try {
-    const raw = sessionStorage.getItem(SESSION_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
-  return {};
-}
-
-function clearSession() {
-  try {
-    sessionStorage.removeItem(SESSION_KEY);
-  } catch { /* ignore */ }
 }
 
 /* ------------------------------------------------------------------ */
@@ -343,21 +319,18 @@ export function OnboardingStepper() {
   const { setUiLockedForOnboarding } = useUIStore();
 
   // ---- State ----
-  const initialRole = isSetupWizard
-    ? 'manager'
-    : ((searchParams.get('role') as OnboardingRole) || null);
   const initialStep = resolveManagerStep(searchParams.get('step'));
 
-  const [role, setRole] = useState<OnboardingRole>(initialRole);
-  const [managerStep, setManagerStep] = useState<ManagerStep>(
-    initialRole === 'manager' ? initialStep : 1,
-  );
-  const previousManagerStepRef = useRef<ManagerStep>(initialRole === 'manager' ? initialStep : 1);
+  const role: OnboardingRole = 'manager';
+  const [managerStep, setManagerStep] = useState<ManagerStep>(initialStep);
+  const previousManagerStepRef = useRef<ManagerStep>(initialStep);
 
   const requestedStepParam = useMemo(
     () => String(searchParams.get('step') ?? '').trim(),
     [searchParams],
   );
+  const initialDraft = useMemo(() => loadOnboardingDraft(), []);
+  const onboardingEntryPoint = initialDraft.entryPoint ?? 'persona';
   const requestedSetupStep = useMemo<ManagerStep | null>(() => {
     if (!requestedStepParam) return null;
     return resolveManagerStep(requestedStepParam);
@@ -385,19 +358,19 @@ export function OnboardingStepper() {
   }, [pathname, requestedStepParam, setUiLockedForOnboarding]);
 
   // Step 1 — Restaurant
-  const [ownerName, setOwnerName] = useState(() => loadSession().ownerName ?? '');
+  const [ownerName, setOwnerName] = useState(() => initialDraft.ownerName ?? '');
   const [ownerNameError, setOwnerNameError] = useState('');
-  const [restaurantName, setRestaurantName] = useState('');
+  const [restaurantName, setRestaurantName] = useState(() => initialDraft.restaurantName ?? '');
   const [restaurantNameError, setRestaurantNameError] = useState('');
   const [locationName, setLocationName] = useState('');
   const [timezone, setTimezone] = useState(() => detectTimezone());
 
   // Created org
   const [organizationId, setOrganizationId] = useState<string | null>(
-    () => loadSession().organizationId ?? null,
+    () => initialDraft.organizationId ?? null,
   );
   const [restaurantCode, setRestaurantCode] = useState<string | null>(
-    () => loadSession().restaurantCode ?? null,
+    () => initialDraft.restaurantCode ?? null,
   );
 
   // Step 2 — Schedule
@@ -417,7 +390,12 @@ export function OnboardingStepper() {
     { name: '', email: '', role: 'Server', hourlyPay: '' },
   ]);
   const [selectedCurrency, setSelectedCurrency] = useState<SupportedCurrency>(
-    () => loadSession().currency ?? detectCurrency(),
+    () => {
+      const storedCurrency = initialDraft.currency;
+      return SUPPORTED_CURRENCIES.some((option) => option.value === storedCurrency)
+        ? (storedCurrency as SupportedCurrency)
+        : detectCurrency();
+    },
   );
   const [checkoutLoading, setCheckoutLoading] = useState<PlanId | null>(null);
   const [selectedPlan, setSelectedPlan] = useState<PlanId | null>(null);
@@ -464,7 +442,6 @@ export function OnboardingStepper() {
   // ---- URL sync ----
   useEffect(() => {
     const params = new URLSearchParams();
-    if (!isSetupWizard && role) params.set('role', role);
     if (isSetupWizard && managerStep > 1) {
       params.set('step', String(managerStep));
     } else if (role === 'manager' && managerStep > 1) {
@@ -514,7 +491,7 @@ export function OnboardingStepper() {
   // ---- Restore org from session on step 2/3 ----
   useEffect(() => {
     if (role === 'manager' && managerStep > 1 && !organizationId) {
-      const session = loadSession();
+      const session = loadOnboardingDraft();
       if (session.organizationId) {
         setOrganizationId(session.organizationId);
         setRestaurantCode(session.restaurantCode ?? null);
@@ -531,7 +508,7 @@ export function OnboardingStepper() {
     if (organizationId !== activeRestaurantId) {
       setOrganizationId(activeRestaurantId);
       setRestaurantCode(activeRestaurant?.restaurantCode ?? null);
-      saveSession({
+      mergeOnboardingDraft({
         organizationId: activeRestaurantId,
         restaurantCode: activeRestaurant?.restaurantCode ?? undefined,
       });
@@ -622,41 +599,37 @@ export function OnboardingStepper() {
       .getState()
       .accessibleRestaurants.find((r) => r.id === organizationId);
     setActiveOrganization(organizationId, matchedRestaurant?.restaurantCode ?? restaurantCode);
-    clearSession();
+    clearOnboardingDraft();
     router.replace('/dashboard');
   }, [organizationId, refreshProfile, restaurantCode, router, setActiveOrganization]);
 
   const skipSetup = useCallback(() => {
-    clearSession();
+    clearOnboardingDraft();
     router.replace(setupExitPath);
   }, [router, setupExitPath]);
 
-  const handleSelectRole = useCallback((selectedRole: 'manager') => {
-    setRole(selectedRole);
-    setError('');
-  }, []);
-
-  const handleBackToRoleSelection = useCallback(() => {
+  const handleBackFromRestaurantStep = useCallback(() => {
     if (isSetupWizard) {
-      setRole('manager');
       setManagerStep(hasExistingOrgInSetup ? 2 : 1);
       setError('');
       return;
     }
-    setRole(null);
-    setManagerStep(1);
+
     setError('');
-  }, [hasExistingOrgInSetup, isSetupWizard]);
+    clearOnboardingDraft();
+    router.replace(onboardingEntryPoint === 'restaurants' ? '/restaurants' : '/persona?edit=1');
+  }, [hasExistingOrgInSetup, isSetupWizard, onboardingEntryPoint, router]);
 
   const handleOwnerNameChange = useCallback((value: string) => {
     setOwnerName(value);
     setOwnerNameError('');
-    saveSession({ ownerName: value });
+    mergeOnboardingDraft({ ownerName: value });
   }, []);
 
   const handleRestaurantNameChange = useCallback((value: string) => {
     setRestaurantName(value);
     setRestaurantNameError('');
+    mergeOnboardingDraft({ restaurantName: value });
   }, []);
 
   const saveStaffProfiles = useCallback(async (orgId: string) => {
@@ -712,6 +685,53 @@ export function OnboardingStepper() {
         return;
       }
 
+      if (organizationId && onboardingEntryPoint === 'restaurants') {
+        const authUserId =
+          currentUser?.authUserId
+          || (await supabase.auth.getSession()).data.session?.user?.id
+          || null;
+
+        if (authUserId) {
+          const accountType = String(currentUser?.accountType ?? 'owner').trim().toLowerCase() === 'employee'
+            ? 'employee'
+            : 'owner';
+          const { error: accountProfileError } = await supabase
+            .from('account_profiles')
+            .upsert(
+              {
+                auth_user_id: authUserId,
+                owner_name: trimmedOwnerName,
+                account_type: accountType,
+              },
+              { onConflict: 'auth_user_id' },
+            );
+          void accountProfileError;
+        }
+
+        const currentRestaurantName = accessibleRestaurants.find(
+          (restaurant) => restaurant.id === organizationId,
+        )?.name;
+        if (trimmedName !== String(currentRestaurantName ?? '').trim()) {
+          await apiFetch('/api/organizations/update', {
+            method: 'POST',
+            json: {
+              organizationId,
+              name: trimmedName,
+            },
+          });
+        }
+
+        mergeOnboardingDraft({
+          organizationId,
+          restaurantCode: restaurantCode ?? undefined,
+          ownerName: trimmedOwnerName,
+          restaurantName: trimmedName,
+        });
+
+        setManagerStep(2);
+        return;
+      }
+
       setLoading(true);
       try {
         const intentResult = await apiFetch<CreateIntentResponse>('/api/orgs/create-intent', {
@@ -749,10 +769,11 @@ export function OnboardingStepper() {
         const newCode = commitResult.data.restaurantCode ?? null;
         setOrganizationId(newOrgId);
         setRestaurantCode(newCode);
-        saveSession({
+        mergeOnboardingDraft({
           organizationId: newOrgId,
           restaurantCode: newCode ?? undefined,
           ownerName: trimmedOwnerName,
+          restaurantName: trimmedName,
         });
 
         const authUserId =
@@ -790,14 +811,17 @@ export function OnboardingStepper() {
     [
       currentUser?.accountType,
       currentUser?.authUserId,
+      onboardingEntryPoint,
       ownerName,
       restaurantName,
       hasExistingOrgInSetup,
       isSetupWizard,
       organizationId,
+      accessibleRestaurants,
       locationName,
       timezone,
       refreshProfile,
+      restaurantCode,
       router,
     ],
   );
@@ -921,7 +945,7 @@ export function OnboardingStepper() {
   }, [isSetupWizard, managerStep, role]);
 
   useEffect(() => {
-    saveSession({ currency: selectedCurrency });
+    mergeOnboardingDraft({ currency: selectedCurrency });
   }, [selectedCurrency]);
 
   const clearPaymentPanelState = useCallback(() => {
@@ -1426,99 +1450,90 @@ export function OnboardingStepper() {
           key={`${role ?? 'unset'}-${managerStep}`}
           className="animate-step-enter p-6 sm:p-8"
         >
-          {/* Role selection */}
-          {!role && <RoleSelectionView onSelect={handleSelectRole} />}
+          <StepIndicator current={managerStep} total={3} />
 
-          {/* Manager path */}
-          {role === 'manager' && (
-            <>
-              <StepIndicator current={managerStep} total={3} />
+          {managerStep === 1 && (
+            <RestaurantStepView
+              ownerName={ownerName}
+              restaurantName={restaurantName}
+              locationName={locationName}
+              timezone={timezone}
+              loading={loading}
+              ownerNameError={ownerNameError}
+              restaurantNameError={restaurantNameError}
+              error={error}
+              onOwnerNameChange={handleOwnerNameChange}
+              onRestaurantNameChange={handleRestaurantNameChange}
+              onLocationNameChange={setLocationName}
+              onTimezoneChange={setTimezone}
+              onSubmit={handleCreateRestaurant}
+              onBack={handleBackFromRestaurantStep}
+            />
+          )}
 
-              {managerStep === 1 && (
-                <RestaurantStepView
-                  ownerName={ownerName}
-                  restaurantName={restaurantName}
-                  locationName={locationName}
-                  timezone={timezone}
-                  loading={loading}
-                  ownerNameError={ownerNameError}
-                  restaurantNameError={restaurantNameError}
-                  error={error}
-                  onOwnerNameChange={handleOwnerNameChange}
-                  onRestaurantNameChange={handleRestaurantNameChange}
-                  onLocationNameChange={setLocationName}
-                  onTimezoneChange={setTimezone}
-                  onSubmit={handleCreateRestaurant}
-                  onBack={handleBackToRoleSelection}
-                  onSkip={skipSetup}
-                />
-              )}
+          {managerStep === 2 && (
+            <ScheduleStepView
+              weekStartDay={weekStartDay}
+              setHoursEnabled={setHours}
+              businessHours={businessHours}
+              staffRows={inviteRows}
+              staffRoleOptions={inviteRoleOptions}
+              selectedRoles={selectedRoles}
+              loading={loading}
+              error={error}
+              onWeekStartDayChange={setWeekStartDay}
+              onSetHoursChange={setSetHours}
+              onBusinessHourChange={updateBusinessHour}
+              onApplyHoursToAll={applyHoursToAllDays}
+              onToggleRole={toggleRole}
+              onStaffRowChange={updateInviteRow}
+              onAddStaffRow={addInviteRow}
+              onRemoveStaffRow={removeInviteRow}
+              onContinue={handleSaveOptionalSetup}
+              onBack={() => {
+                if (hasExistingOrgInSetup) {
+                  router.replace('/restaurants');
+                  return;
+                }
+                setManagerStep(1);
+                if (isSetupWizard) {
+                  router.replace('/setup?step=1');
+                }
+              }}
+              onSkip={handleSkipOptionalSetup}
+            />
+          )}
 
-              {managerStep === 2 && (
-                <ScheduleStepView
-                  weekStartDay={weekStartDay}
-                  setHoursEnabled={setHours}
-                  businessHours={businessHours}
-                  staffRows={inviteRows}
-                  staffRoleOptions={inviteRoleOptions}
-                  selectedRoles={selectedRoles}
-                  loading={loading}
-                  error={error}
-                  onWeekStartDayChange={setWeekStartDay}
-                  onSetHoursChange={setSetHours}
-                  onBusinessHourChange={updateBusinessHour}
-                  onApplyHoursToAll={applyHoursToAllDays}
-                  onToggleRole={toggleRole}
-                  onStaffRowChange={updateInviteRow}
-                  onAddStaffRow={addInviteRow}
-                  onRemoveStaffRow={removeInviteRow}
-                  onContinue={handleSaveOptionalSetup}
-                  onBack={() => {
-                    if (hasExistingOrgInSetup) {
-                      router.replace('/restaurants');
-                      return;
-                    }
-                    setManagerStep(1);
-                    if (isSetupWizard) {
-                      router.replace('/setup?step=1');
-                    }
-                  }}
-                  onSkip={handleSkipOptionalSetup}
-                />
-              )}
-
-              {managerStep === 3 && (
-                <SubscriptionStepView
-                  checkoutLoading={checkoutLoading}
-                  checkoutFinalizing={checkoutFinalizing}
-                  error={checkoutError}
-                  notice={checkoutNotice}
-                  paymentReceived={paymentReceived}
-                  manageBillingUrl={checkoutManageUrl}
-                  selectedCurrency={selectedCurrency}
-                  selectedPlan={selectedPlan}
-                  paymentPanelOpen={paymentPanelOpen}
-                  paymentClientSecret={paymentClientSecret}
-                  subscriptionActive={subscriptionActive}
-                  subscriptionStatus={subscriptionStatus}
-                  onSelectPlan={handleSelectPlan}
-                  onSelectCurrency={setSelectedCurrency}
-                  onStartCheckout={handleStartCheckout}
-                  onStartRedirectCheckout={handleStartRedirectCheckout}
-                  onRetry={handleRetryCheckout}
-                  onClosePaymentPanel={handlePaymentIntentModalClose}
-                  onGoToDashboard={finishSetup}
-                  onManageBilling={() => router.push('/billing')}
-                  onBack={() => {
-                    setManagerStep(2);
-                    if (isSetupWizard) {
-                      router.replace('/setup?step=2');
-                    }
-                  }}
-                  onSkip={skipSetup}
-                />
-              )}
-            </>
+          {managerStep === 3 && (
+            <SubscriptionStepView
+              checkoutLoading={checkoutLoading}
+              checkoutFinalizing={checkoutFinalizing}
+              error={checkoutError}
+              notice={checkoutNotice}
+              paymentReceived={paymentReceived}
+              manageBillingUrl={checkoutManageUrl}
+              selectedCurrency={selectedCurrency}
+              selectedPlan={selectedPlan}
+              paymentPanelOpen={paymentPanelOpen}
+              paymentClientSecret={paymentClientSecret}
+              subscriptionActive={subscriptionActive}
+              subscriptionStatus={subscriptionStatus}
+              onSelectPlan={handleSelectPlan}
+              onSelectCurrency={setSelectedCurrency}
+              onStartCheckout={handleStartCheckout}
+              onStartRedirectCheckout={handleStartRedirectCheckout}
+              onRetry={handleRetryCheckout}
+              onClosePaymentPanel={handlePaymentIntentModalClose}
+              onGoToDashboard={finishSetup}
+              onManageBilling={() => router.push('/billing')}
+              onBack={() => {
+                setManagerStep(2);
+                if (isSetupWizard) {
+                  router.replace('/setup?step=2');
+                }
+              }}
+              onSkip={skipSetup}
+            />
           )}
         </div>
       </div>
@@ -1529,42 +1544,6 @@ export function OnboardingStepper() {
 /* ------------------------------------------------------------------ */
 /* Sub-views                                                           */
 /* ------------------------------------------------------------------ */
-
-function RoleSelectionView({
-  onSelect,
-}: {
-  onSelect: (role: 'manager') => void;
-}) {
-  return (
-    <div>
-      <h1 className="text-xl sm:text-2xl font-bold text-theme-primary text-center mb-2">
-        How will you use CrewShyft?
-      </h1>
-      <p className="text-sm text-theme-tertiary text-center mb-8">
-        Choose your role to get started with the right setup.
-      </p>
-
-      <div className="grid grid-cols-1 gap-4">
-        <button
-          onClick={() => onSelect('manager')}
-          className="group flex flex-col items-center gap-3 p-6 rounded-xl border-2 border-theme-primary bg-theme-tertiary/30 hover:border-amber-500/60 hover:bg-amber-500/5 transition-all text-left"
-        >
-          <div className="w-12 h-12 rounded-xl bg-amber-500/10 flex items-center justify-center group-hover:bg-amber-500/20 transition-colors">
-            <Store className="w-6 h-6 text-amber-500" />
-          </div>
-          <div className="text-center">
-            <p className="font-semibold text-theme-primary">I&apos;m a Manager / Owner</p>
-            <p className="text-xs text-theme-tertiary mt-1">
-              Set up your restaurant and start scheduling
-            </p>
-          </div>
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---- Step 1: Restaurant ---- */
 
 function RestaurantStepView({
   ownerName,
@@ -1581,7 +1560,6 @@ function RestaurantStepView({
   onTimezoneChange,
   onSubmit,
   onBack,
-  onSkip,
 }: {
   ownerName: string;
   restaurantName: string;
@@ -1597,7 +1575,6 @@ function RestaurantStepView({
   onTimezoneChange: (v: string) => void;
   onSubmit: (e: FormEvent) => void;
   onBack: () => void;
-  onSkip: () => void;
 }) {
   const canSubmit = ownerName.trim().length > 0 && restaurantName.trim().length > 0 && !loading;
 
@@ -1711,14 +1688,6 @@ function RestaurantStepView({
               <ArrowRight className="w-4 h-4" />
             </>
           )}
-        </button>
-        <button
-          type="button"
-          onClick={onSkip}
-          className="w-full py-2.5 text-sm text-theme-tertiary hover:text-theme-primary transition-colors inline-flex items-center justify-center gap-1"
-        >
-          Skip for now
-          <ArrowRight className="w-3.5 h-3.5" />
         </button>
       </form>
     </div>
@@ -2584,8 +2553,3 @@ function PlanCard({
     </div>
   );
 }
-
-
-
-
-

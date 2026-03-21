@@ -52,6 +52,7 @@ export interface UserProfile {
   employeeNumber?: number | null;
   realEmail?: string | null;
   persona?: UserPersona;
+  hasCompletedRestaurantSetup?: boolean;
 }
 
 export interface Shift {

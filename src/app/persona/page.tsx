@@ -1,12 +1,12 @@
 'use client';
 
 import { Suspense, useEffect, useMemo, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Briefcase, Check, Users } from 'lucide-react';
 import { TransitionScreen } from '@/components/auth/TransitionScreen';
 import { apiFetch } from '@/lib/apiClient';
-import { AccountPersona, normalizePersona, persistPersona } from '@/lib/persona';
-import { resolvePostAuthDestination } from '@/lib/authRedirect';
+import { AccountPersona, persistPersona, readStoredPersona } from '@/lib/persona';
+import { resolvePostAuthDestination, resolveRoutingPersona } from '@/lib/authRedirect';
 import { supabase } from '@/lib/supabase/client';
 import { useAuthStore } from '@/store/authStore';
 import { useUIStore } from '@/store/uiStore';
@@ -23,6 +23,7 @@ function getPersonaCardClasses(isSelected: boolean) {
 
 function PersonaContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { init, isInitialized, accessibleRestaurants, currentUser, refreshProfile } = useAuthStore();
   const { setUiLockedForOnboarding } = useUIStore();
 
@@ -58,20 +59,27 @@ function PersonaContent() {
   }, [setUiLockedForOnboarding]);
 
   const existingPersona = useMemo(
-    () => normalizePersona(currentUser?.persona),
+    () => resolveRoutingPersona(currentUser?.persona, readStoredPersona()),
     [currentUser?.persona],
   );
+  const allowReselect = searchParams.get('edit') === '1' && accessibleRestaurants.length === 0;
 
   useEffect(() => {
     if (!isAuthResolved || !isInitialized) return;
+    if (submitting) return;
     if (!hasSession) {
       router.replace('/login');
       return;
     }
-    if (existingPersona) {
-      router.replace(resolvePostAuthDestination(accessibleRestaurants.length, currentUser?.role, existingPersona));
+    if ((!allowReselect && existingPersona) || accessibleRestaurants.length > 0) {
+      router.replace(resolvePostAuthDestination(
+        accessibleRestaurants.length,
+        currentUser?.role,
+        existingPersona,
+        currentUser?.hasCompletedRestaurantSetup,
+      ));
     }
-  }, [accessibleRestaurants.length, currentUser?.role, existingPersona, hasSession, isAuthResolved, isInitialized, router]);
+  }, [accessibleRestaurants.length, allowReselect, currentUser?.hasCompletedRestaurantSetup, currentUser?.role, existingPersona, hasSession, isAuthResolved, isInitialized, router, submitting]);
 
   const handleContinue = async () => {
     if (!selectedPersona) {
@@ -89,7 +97,11 @@ function PersonaContent() {
     });
 
     if (!result.ok) {
-      setError('Failed to save your selection. Please try again.');
+      const apiError = typeof result.error === 'string' && result.error
+        ? result.error
+        : 'Failed to save your selection. Please try again.';
+      console.error('[persona] save failed:', result.status, apiError);
+      setError(apiError);
       setSubmitting(false);
       return;
     }
@@ -97,10 +109,10 @@ function PersonaContent() {
     await refreshProfile();
     setUiLockedForOnboarding(false);
     router.refresh();
-    router.push('/start');
+    router.push(selectedPersona === 'manager' ? '/onboarding' : '/start');
   };
 
-  if (!isInitialized || !isAuthResolved || !hasSession || existingPersona) {
+  if (!isInitialized || !isAuthResolved || !hasSession || ((!allowReselect && existingPersona) || accessibleRestaurants.length > 0)) {
     return <TransitionScreen message="Loading..." />;
   }
 

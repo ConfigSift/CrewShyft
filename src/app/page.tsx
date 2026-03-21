@@ -5,8 +5,8 @@ import { useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
 import { useAuthStore } from '../store/authStore';
 import { CheckCircle } from 'lucide-react';
-import { normalizePersona, readStoredPersona } from '@/lib/persona';
-import { resolveNoMembershipDestination } from '@/lib/authRedirect';
+import { readStoredPersona } from '@/lib/persona';
+import { resolvePostAuthDestination, resolveRoutingPersona, shouldRequirePersonaSelection } from '@/lib/authRedirect';
 
 const LandingPage = dynamic(() => import('../components/landing/LandingPage').then(m => ({ default: m.LandingPage })), {
   loading: () => (
@@ -31,6 +31,7 @@ export default function Home() {
     isInitialized,
     activeRestaurantId,
     accessibleRestaurants,
+    resumableRestaurantIds,
     pendingInvitations,
     init,
   } = useAuthStore();
@@ -58,37 +59,48 @@ export default function Home() {
     // No user -> show landing page (handled in render)
     if (!currentUser) return;
 
-    const persona = normalizePersona(currentUser.persona) ?? readStoredPersona();
-    if (!persona) {
+    const persona = resolveRoutingPersona(currentUser.persona, readStoredPersona());
+    const hasResumableManagerRestaurant = resumableRestaurantIds.length > 0;
+
+    if (accessibleRestaurants.length > 0) {
+      if (pendingInvitations.length > 0 && !activeRestaurantId) {
+        router.push('/restaurants');
+        return;
+      }
+
+      if (hasResumableManagerRestaurant && !activeRestaurantId) {
+        router.push('/restaurants');
+        return;
+      }
+
+      if (accessibleRestaurants.length === 1 || activeRestaurantId) {
+        router.push('/dashboard');
+        return;
+      }
+
+      router.push('/restaurants');
+      return;
+    }
+
+    if (shouldRequirePersonaSelection(accessibleRestaurants.length, persona)) {
       router.replace('/persona');
       return;
     }
 
-    // Rule 1: Pending invitations AND no valid selection -> /restaurants
     if (pendingInvitations.length > 0 && !activeRestaurantId) {
       router.push('/restaurants');
       return;
     }
 
-    // Rule 2: No memberships -> /restaurants for owner/manager personas, /join for employee
-    if (accessibleRestaurants.length === 0) {
-      router.replace(resolveNoMembershipDestination(currentUser.role, persona));
-      return;
-    }
-
-    // Rule 3: Single membership -> /dashboard
-    if (accessibleRestaurants.length === 1) {
-      router.push('/dashboard');
-      return;
-    }
-
-    // Rule 4: Multiple memberships
-    if (activeRestaurantId) {
-      router.push('/dashboard');
-    } else {
-      router.push('/restaurants');
-    }
-  }, [isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router]);
+    router.replace(resolvePostAuthDestination(
+      accessibleRestaurants.length,
+      currentUser.role,
+      persona,
+      currentUser.hasCompletedRestaurantSetup,
+      hasResumableManagerRestaurant,
+      Boolean(activeRestaurantId),
+    ));
+  }, [isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, resumableRestaurantIds, pendingInvitations, router]);
 
   // Show landing page while initializing or when not authenticated
   if (!isInitialized || !currentUser) {

@@ -166,7 +166,7 @@ export function Header({ minimal = false, onboardingMode = false }: HeaderProps)
   const isEmployee = currentRole === 'EMPLOYEE';
   const isRestrictedHeader = isSubscriptionBlocked && !locked;
   const showEmployeeMobileHeader = !locked && isEmployee && isEmployeeNavPage && !minimal;
-  const logoHref = locked || isRestrictedHeader ? '/setup' : appHomeHref;
+  const logoHref = currentUser ? appHomeHref : (locked || isRestrictedHeader ? '/setup' : appHomeHref);
 
   function toYMD(date: Date): string {
     const year = date.getFullYear();

@@ -6,8 +6,8 @@ import { Dashboard } from '../../components/Dashboard';
 import { EmployeeDashboard } from '../../components/employee/EmployeeDashboard';
 import { useScheduleStore } from '../../store/scheduleStore';
 import { useAuthStore } from '../../store/authStore';
-import { normalizePersona, readStoredPersona } from '@/lib/persona';
-import { resolveNoMembershipDestination } from '@/lib/authRedirect';
+import { readStoredPersona } from '@/lib/persona';
+import { resolveNoMembershipAppDestination, resolveNoMembershipDestination, resolveRoutingPersona, shouldRequirePersonaSelection } from '@/lib/authRedirect';
 import { getUserRole, isManagerRole } from '../../utils/role';
 import { supabase } from '../../lib/supabase/client';
 import { TransitionScreen } from '../../components/auth/TransitionScreen';
@@ -36,6 +36,7 @@ export default function DashboardPage() {
     isInitialized,
     activeRestaurantId,
     accessibleRestaurants,
+    resumableRestaurantIds,
     pendingInvitations,
     subscriptionStatus,
     init,
@@ -78,13 +79,17 @@ export default function DashboardPage() {
           return;
         }
 
-        const storedPersona = readStoredPersona();
-        if (!storedPersona) {
-          router.replace('/persona?next=/dashboard');
-          return;
-        }
-
+        const storedPersona = resolveRoutingPersona(readStoredPersona());
         if (accessibleRestaurants.length === 0) {
+          if (shouldRequirePersonaSelection(accessibleRestaurants.length, storedPersona)) {
+            router.replace('/persona?next=/dashboard');
+            return;
+          }
+          const destination = resolveNoMembershipAppDestination(null, storedPersona, false);
+          if (destination) {
+            router.replace(destination);
+            return;
+          }
           router.replace(resolveNoMembershipDestination(null, storedPersona));
           return;
         }
@@ -96,24 +101,41 @@ export default function DashboardPage() {
         return;
       }
 
-      const persona = normalizePersona(currentUser.persona) ?? readStoredPersona();
-      if (!persona) {
-        router.replace('/persona?next=/dashboard');
-        return;
-      }
-
       if (pendingInvitations.length > 0 && !activeRestaurantId) {
         router.replace('/restaurants');
         return;
       }
 
+      if (activeRestaurantId && resumableRestaurantIds.includes(activeRestaurantId)) {
+        router.replace('/restaurants');
+        return;
+      }
+
+      const persona = resolveRoutingPersona(currentUser.persona, readStoredPersona());
       if (accessibleRestaurants.length === 0) {
-        router.replace(resolveNoMembershipDestination(currentUser.role, persona));
+        if (shouldRequirePersonaSelection(accessibleRestaurants.length, persona)) {
+          router.replace('/persona?next=/dashboard');
+          return;
+        }
+        const destination = resolveNoMembershipAppDestination(
+          currentUser.role,
+          persona,
+          currentUser.hasCompletedRestaurantSetup,
+        );
+        if (destination) {
+          router.replace(destination);
+          return;
+        }
+        router.replace(resolveNoMembershipDestination(
+          currentUser.role,
+          persona,
+        ));
         return;
       }
 
       if (!activeRestaurantId) {
         router.replace('/restaurants');
+        return;
       }
     }
 
@@ -121,7 +143,7 @@ export default function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants.length, pendingInvitations.length, router]);
+  }, [isHydrated, isInitialized, currentUser, activeRestaurantId, accessibleRestaurants.length, resumableRestaurantIds, pendingInvitations.length, router]);
 
   // Subscription loading gate: show spinner while status is 'loading', max 5 seconds
   const [subLoadingTimedOut, setSubLoadingTimedOut] = useState(false);
@@ -139,11 +161,18 @@ export default function DashboardPage() {
     };
   }, [subscriptionStatus]);
 
-  const isSubLoading = subscriptionStatus === 'loading' && !subLoadingTimedOut;
+  const isSubLoading =
+    Boolean(activeRestaurantId)
+    && subscriptionStatus === 'loading'
+    && !subLoadingTimedOut;
 
   if (!isHydrated || !isInitialized || !currentUser || isSubLoading) {
     const loadingMessage = isSubLoading ? 'Checking subscription...' : 'Loading...';
     return <TransitionScreen message={loadingMessage} />;
+  }
+
+  if (accessibleRestaurants.length === 0) {
+    return <TransitionScreen message="Redirecting..." />;
   }
 
   // Branch here to keep manager/admin dashboard untouched while giving employees their own view.

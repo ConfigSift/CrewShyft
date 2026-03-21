@@ -5,29 +5,18 @@ import { useRouter } from 'next/navigation';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 import { Modal } from '../../components/Modal';
+import { clearOnboardingDraft, replaceOnboardingDraft } from '@/lib/onboardingDraft';
 import {
   PlusCircle,
   Check,
   ChevronRight,
   Pencil,
-  Settings2,
+  Loader2,
   Store,
   Mail,
   Trash2,
   ExternalLink,
-  Loader2,
 } from 'lucide-react';
-
-type CreateIntentResponse = {
-  intentId: string;
-  billingEnabled: boolean;
-};
-
-type CommitIntentResponse = {
-  ok: boolean;
-  organizationId: string;
-  restaurantCode?: string | null;
-};
 
 type DeleteRestaurantResponse = {
   ok: boolean;
@@ -57,6 +46,13 @@ type AccountDeleteResponse = {
   deletedAuthUser: boolean;
 };
 
+type OrgSubscriptionEntry = {
+  organization_id: string;
+  status: string;
+  cancel_at_period_end: boolean;
+  current_period_end: string | null;
+};
+
 type SubscriptionSnapshot = {
   billingEnabled?: boolean;
   status?: string;
@@ -68,6 +64,7 @@ type SubscriptionSnapshot = {
     cancel_at_period_end?: boolean;
     status?: string;
   } | null;
+  org_subscriptions?: OrgSubscriptionEntry[];
 };
 
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
@@ -100,8 +97,6 @@ export default function RestaurantSelectPage() {
   const [newRestaurantName, setNewRestaurantName] = useState('');
   const [manageError, setManageError] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
-  const [intentId, setIntentId] = useState<string | null>(null);
-  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -123,6 +118,10 @@ export default function RestaurantSelectPage() {
   }, [init]);
 
   useEffect(() => {
+    clearOnboardingDraft();
+  }, []);
+
+  useEffect(() => {
     if (!deleteToast) return;
     const timer = setTimeout(() => {
       setDeleteToast(null);
@@ -132,13 +131,15 @@ export default function RestaurantSelectPage() {
     };
   }, [deleteToast]);
 
-  const refreshBillingSnapshot = useCallback(async () => {
+  const refreshBillingSnapshot = useCallback(async (): Promise<SubscriptionSnapshot | null> => {
     const result = await apiFetch<SubscriptionSnapshot>('/api/billing/subscription-status', {
       cache: 'no-store',
     });
     if (result.ok && result.data) {
       setBillingSnapshot(result.data);
+      return result.data;
     }
+    return null;
   }, []);
 
   useEffect(() => {
@@ -168,6 +169,22 @@ export default function RestaurantSelectPage() {
       !activeRestaurantId
     ) {
       const only = accessibleRestaurants[0];
+      const onlyRole = String(only.role ?? '').trim().toLowerCase();
+      const onlyCanResumeSetup = onlyRole === 'admin' || onlyRole === 'owner' || onlyRole === 'manager';
+      if (onlyCanResumeSetup && BILLING_ENABLED && !billingSnapshot) {
+        return;
+      }
+      const onlyHasSubscriptionRecord =
+        billingSnapshot?.billingEnabled === false
+          ? true
+          : Boolean(
+              billingSnapshot?.org_subscriptions?.some(
+                (subscription) => subscription.organization_id === only.id,
+              ),
+            );
+      if (onlyCanResumeSetup && billingSnapshot && !onlyHasSubscriptionRecord) {
+        return;
+      }
       setActiveOrganization(only.id, only.restaurantCode);
       if (process.env.NODE_ENV !== 'production') {
          
@@ -179,7 +196,16 @@ export default function RestaurantSelectPage() {
     // If activeRestaurantId is already set AND no pending invites AND user navigated here directly,
     // we let them stay (they may want to switch restaurants).
     // The page is now accessible to all authenticated users.
-  }, [isInitialized, currentUser, activeRestaurantId, accessibleRestaurants, pendingInvitations, router, setActiveOrganization]);
+  }, [
+    isInitialized,
+    currentUser,
+    activeRestaurantId,
+    accessibleRestaurants,
+    billingSnapshot,
+    pendingInvitations,
+    router,
+    setActiveOrganization,
+  ]);
 
   const hasAdminMembership = useMemo(
     () =>
@@ -189,22 +215,8 @@ export default function RestaurantSelectPage() {
       }),
     [accessibleRestaurants]
   );
-  const hasManagerMembership = useMemo(
-    () =>
-      accessibleRestaurants.some((restaurant) => {
-        const value = String(restaurant.role ?? '').trim().toLowerCase();
-        return value === 'admin' || value === 'owner' || value === 'manager';
-      }),
-    [accessibleRestaurants],
-  );
   const normalizedUserRole = String(currentUser?.role ?? '').trim().toUpperCase();
   const canCreateRestaurant = accessibleRestaurants.length === 0 || hasAdminMembership;
-  const canLaunchGuidedSetup =
-    canCreateRestaurant ||
-    hasManagerMembership ||
-    normalizedUserRole === 'ADMIN' ||
-    normalizedUserRole === 'OWNER' ||
-    normalizedUserRole === 'MANAGER';
   const ownedOrgCount = Math.max(
     0,
     Number(billingSnapshot?.owned_org_count ?? subscriptionDetails?.ownedOrgCount ?? accessibleRestaurants.length),
@@ -240,9 +252,59 @@ export default function RestaurantSelectPage() {
     );
   }
 
-  const handleSelectRestaurant = (restaurantId: string) => {
+  const isManagerCapableRestaurant = useCallback((restaurant: { role: string }) => {
+    const role = String(restaurant.role ?? '').trim().toLowerCase();
+    return role === 'admin' || role === 'owner' || role === 'manager';
+  }, []);
+
+  const isResumableRestaurantFromSnapshot = useCallback((restaurant: { id: string; role: string }, snapshot: SubscriptionSnapshot | null) => {
+    if (!snapshot || snapshot.billingEnabled === false) return false;
+    if (!isManagerCapableRestaurant(restaurant)) return false;
+
+    const orgSub = snapshot.org_subscriptions?.find(
+      (subscription) => subscription.organization_id === restaurant.id,
+    );
+
+    return !orgSub;
+  }, [isManagerCapableRestaurant]);
+
+  const isResumableOnboardingRestaurant = useCallback((restaurant: {
+    id: string;
+    role: string;
+  }) => {
+    return isResumableRestaurantFromSnapshot(restaurant, billingSnapshot);
+  }, [billingSnapshot, isResumableRestaurantFromSnapshot]);
+
+  useEffect(() => {
+    if (!activeRestaurantId) return;
+    const activeRestaurant = accessibleRestaurants.find((restaurant) => restaurant.id === activeRestaurantId);
+    if (!activeRestaurant) return;
+    if (!isResumableOnboardingRestaurant(activeRestaurant)) return;
+    clearActiveOrganization();
+  }, [activeRestaurantId, accessibleRestaurants, clearActiveOrganization, isResumableOnboardingRestaurant]);
+
+  const handleSelectRestaurant = async (restaurantId: string) => {
     const selected = accessibleRestaurants.find((item) => item.id === restaurantId);
-    setActiveOrganization(restaurantId, selected?.restaurantCode ?? null);
+    if (!selected) return;
+
+    let snapshot = billingSnapshot;
+    if (!snapshot && BILLING_ENABLED && isManagerCapableRestaurant(selected)) {
+      snapshot = await refreshBillingSnapshot();
+    }
+
+    if (isResumableRestaurantFromSnapshot(selected, snapshot)) {
+      replaceOnboardingDraft({
+        entryPoint: 'restaurants',
+        organizationId: selected.id,
+        restaurantCode: selected.restaurantCode,
+        ownerName: resolveOwnerDraftName(),
+        restaurantName: selected.name,
+      });
+      router.push('/onboarding');
+      return;
+    }
+
+    setActiveOrganization(restaurantId, selected.restaurantCode ?? null);
     router.push('/dashboard');
   };
 
@@ -287,91 +349,18 @@ export default function RestaurantSelectPage() {
     await refreshProfile();
   };
 
-  const clearIntentFlow = () => {
-    setIntentId(null);
-    setCreateModalOpen(false);
-  };
+  const resolveOwnerDraftName = useCallback(() => {
+    const ownerName = String(currentUser?.ownerName ?? currentUser?.fullName ?? '').trim();
+    if (ownerName) return ownerName;
 
-  const commitIntent = async (nextIntentId: string) => {
-    const result = await apiFetch<CommitIntentResponse>('/api/orgs/commit-intent', {
-      method: 'POST',
-      json: { intentId: nextIntentId },
-    });
-
-    if (result.ok && result.data?.organizationId) {
-      const { organizationId } = result.data;
-      await refreshProfile();
-      const matchedRestaurant = useAuthStore
-        .getState()
-        .accessibleRestaurants
-        .find((restaurant) => restaurant.id === organizationId);
-      setActiveOrganization(organizationId, matchedRestaurant?.restaurantCode ?? null);
-      setNewRestaurantName('');
-      clearIntentFlow();
-      router.push('/dashboard');
-      return true;
+    const email = String(currentUser?.email ?? currentUser?.realEmail ?? '').trim();
+    if (email) {
+      const emailPrefix = email.split('@')[0]?.trim();
+      if (emailPrefix) return emailPrefix;
     }
 
-    setManageError(result.error || 'Unable to create restaurant.');
-    return false;
-  };
-
-  const handleCancelPendingIntent = async () => {
-    if (!intentId) {
-      clearIntentFlow();
-      return;
-    }
-    await apiFetch('/api/orgs/cancel-intent', {
-      method: 'POST',
-      json: { intentId },
-    });
-    clearIntentFlow();
-  };
-
-  // Billing-enabled path: commit the org immediately (deferred billing check),
-  // activate it, save to onboarding session, then send the user to the
-  // embedded checkout in the setup wizard (Step 3).
-  const handleCommitAndSetup = async () => {
-    if (!intentId) return;
-    setCreateSubmitting(true);
-    setManageError('');
-    try {
-      const commitResult = await apiFetch<CommitIntentResponse>('/api/orgs/commit-intent', {
-        method: 'POST',
-        json: { intentId, deferBillingCheck: true },
-      });
-
-      if (!commitResult.ok || !commitResult.data?.organizationId) {
-        setManageError(commitResult.error || 'Unable to create restaurant. Try again.');
-        return;
-      }
-
-      const { organizationId, restaurantCode } = commitResult.data;
-
-      await refreshProfile();
-      const matched = useAuthStore
-        .getState()
-        .accessibleRestaurants
-        .find((r) => r.id === organizationId);
-      setActiveOrganization(organizationId, matched?.restaurantCode ?? restaurantCode ?? null);
-
-      // Persist to the shared onboarding session key so OnboardingStepper
-      // Step 3 can resolve organizationId without the user going through Step 1.
-      try {
-        const existing = JSON.parse(sessionStorage.getItem('crewshyft_onboarding') || '{}') as Record<string, unknown>;
-        sessionStorage.setItem('crewshyft_onboarding', JSON.stringify({
-          ...existing,
-          organizationId,
-          restaurantCode: restaurantCode ?? undefined,
-        }));
-      } catch { /* ignore */ }
-
-      clearIntentFlow();
-      router.push('/setup?step=3');
-    } finally {
-      setCreateSubmitting(false);
-    }
-  };
+    return '';
+  }, [currentUser?.email, currentUser?.fullName, currentUser?.ownerName, currentUser?.realEmail]);
 
   const handleCreateRestaurant = async () => {
     setManageError('');
@@ -382,33 +371,12 @@ export default function RestaurantSelectPage() {
     }
 
     setCreateSubmitting(true);
-
-    const createIntentResult = await apiFetch<CreateIntentResponse>('/api/orgs/create-intent', {
-      method: 'POST',
-      json: { restaurantName: name },
+    replaceOnboardingDraft({
+      entryPoint: 'restaurants',
+      ownerName: resolveOwnerDraftName(),
+      restaurantName: name,
     });
-
-    if (!createIntentResult.ok || !createIntentResult.data?.intentId) {
-      setManageError(createIntentResult.error || 'Unable to create restaurant. Try again.');
-      setCreateSubmitting(false);
-      return;
-    }
-
-    const nextIntentId = createIntentResult.data.intentId;
-    setIntentId(nextIntentId);
-
-    if (!createIntentResult.data.billingEnabled) {
-      await commitIntent(nextIntentId);
-      setCreateSubmitting(false);
-      return;
-    }
-
-    setCreateModalOpen(true);
-    setCreateSubmitting(false);
-  };
-
-  const handleOpenGuidedSetup = () => {
-    router.push('/setup');
+    router.push('/onboarding');
   };
 
   const handleOpenDelete = (restaurant: { id: string; name: string; restaurantCode: string }) => {
@@ -475,6 +443,7 @@ export default function RestaurantSelectPage() {
     await refreshProfile();
     await useAuthStore.getState().fetchSubscriptionStatus();
     await refreshBillingSnapshot();
+    const remainingRestaurants = useAuthStore.getState().accessibleRestaurants.length;
 
     const responseData = (result.data ?? {}) as DeleteRestaurantResponse;
     const quantitySynced = responseData.quantitySynced !== false;
@@ -500,6 +469,10 @@ export default function RestaurantSelectPage() {
     setDeleteSubmitting(false);
     setDeleteTarget(null);
     setDeleteConfirm('');
+
+    if (remainingRestaurants === 0) {
+      router.replace('/restaurants');
+    }
   };
 
   const handleDeleteAccount = async () => {
@@ -584,7 +557,8 @@ export default function RestaurantSelectPage() {
           ) : (
             <div className="divide-y divide-theme-primary">
               {accessibleRestaurants.map((restaurant) => {
-                const isActive = activeRestaurantId === restaurant.id;
+                const isResumableSetup = isResumableOnboardingRestaurant(restaurant);
+                const isActive = activeRestaurantId === restaurant.id && !isResumableSetup;
                 const isManagerForThis = (() => {
                   const role = String(restaurant.role ?? '').trim().toLowerCase();
                   return role === 'admin' || role === 'manager';
@@ -625,6 +599,11 @@ export default function RestaurantSelectPage() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="font-medium text-theme-primary text-sm truncate">{restaurant.name}</p>
+                        {isResumableSetup && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 text-[10px] font-semibold uppercase shrink-0">
+                            Resume setup
+                          </span>
+                        )}
                         {isActive && (
                           <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-500 text-[10px] font-semibold uppercase shrink-0">
                             <Check className="w-2.5 h-2.5" />
@@ -798,21 +777,9 @@ export default function RestaurantSelectPage() {
                   className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg bg-emerald-500 text-zinc-900 font-semibold hover:bg-emerald-400 transition-colors text-sm disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <PlusCircle className="w-4 h-4" />
-                  {createSubmitting ? 'Starting...' : 'Create'}
+                  {createSubmitting ? 'Continuing...' : 'Create'}
                 </button>
               </div>
-              {canLaunchGuidedSetup && (
-                <div className="mt-3 flex items-center justify-end">
-                  <button
-                    type="button"
-                    onClick={handleOpenGuidedSetup}
-                    className="inline-flex items-center gap-2 rounded-lg border border-theme-primary px-3 py-2 text-xs font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                  >
-                    <Settings2 className="w-3.5 h-3.5" />
-                    Guided setup (optional)
-                  </button>
-                </div>
-              )}
               {manageError && !editingId && <p className="text-xs text-red-400 mt-2">{manageError}</p>}
             </div>
           </div>
@@ -824,16 +791,6 @@ export default function RestaurantSelectPage() {
             </div>
             <div className="p-4">
               <p className="text-xs text-theme-muted">Only admins can create restaurants.</p>
-              {canLaunchGuidedSetup && (
-                <button
-                  type="button"
-                  onClick={handleOpenGuidedSetup}
-                  className="mt-3 inline-flex items-center gap-2 rounded-lg border border-theme-primary px-3 py-2 text-xs font-semibold text-theme-secondary hover:bg-theme-hover hover:text-theme-primary transition-colors"
-                >
-                  <Settings2 className="w-3.5 h-3.5" />
-                  Guided setup (optional)
-                </button>
-              )}
             </div>
           </div>
         )}
@@ -881,39 +838,6 @@ export default function RestaurantSelectPage() {
       </div>
 
       <Modal
-        isOpen={createModalOpen}
-        onClose={() => void handleCancelPendingIntent()}
-        title="Create New Restaurant"
-        size="md"
-      >
-        <div className="space-y-4">
-          <p className="text-sm text-theme-secondary">
-            Each restaurant has its own subscription. You&apos;ll choose a plan and complete billing in the next step.
-          </p>
-
-          <div className="flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={() => void handleCancelPendingIntent()}
-              disabled={createSubmitting}
-              className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              onClick={() => void handleCommitAndSetup()}
-              disabled={createSubmitting}
-              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
-            >
-              {createSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              {createSubmitting ? 'Setting up...' : 'Continue to billing'}
-            </button>
-          </div>
-        </div>
-      </Modal>
-
-      <Modal
         isOpen={Boolean(deleteTarget)}
         onClose={handleCloseDelete}
         title="Delete restaurant?"
@@ -925,11 +849,22 @@ export default function RestaurantSelectPage() {
               Deleting removes schedules/staff/data and ends access immediately. Cannot be undone.
             </p>
           </div>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">
-            <p className="text-sm text-amber-800 dark:text-amber-200">
-              This will reduce your billed locations from {Math.max(0, billedQuantity)} to {nextOwnedCountAfterDelete}.
-            </p>
-          </div>
+          {(() => {
+            const orgSub = billingSnapshot?.org_subscriptions?.find(
+              (s) => s.organization_id === deleteTarget?.id,
+            );
+            const isActive = orgSub && (orgSub.status === 'active' || orgSub.status === 'trialing');
+            if (!isActive) return null;
+            return (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">
+                <p className="text-sm text-amber-800 dark:text-amber-200">
+                  This will cancel the subscription for{' '}
+                  <span className="font-semibold">{deleteTarget?.name}</span>.
+                  {' '}You won&apos;t be charged again.
+                </p>
+              </div>
+            );
+          })()}
           <div className="space-y-2">
             <label className="text-xs uppercase tracking-wide text-theme-muted">
               Type DELETE to confirm

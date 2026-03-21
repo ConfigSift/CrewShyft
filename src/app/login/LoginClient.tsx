@@ -8,8 +8,8 @@ import { useAuthStore } from '../../store/authStore';
 import { supabase } from '../../lib/supabase/client';
 import { getAuthCallbackUrl, getSiteUrl } from '../../lib/site-url';
 import { TransitionScreen } from '../../components/auth/TransitionScreen';
-import { normalizePersona, readStoredPersona } from '@/lib/persona';
-import { resolvePostAuthDestination } from '@/lib/authRedirect';
+import { readStoredPersona } from '@/lib/persona';
+import { resolvePostAuthDestination, resolveRoutingPersona, shouldRequirePersonaSelection } from '@/lib/authRedirect';
 import { getAppBase } from '@/lib/routing/getBaseUrls';
 
 type LoginClientProps = {
@@ -27,7 +27,7 @@ function isUnverifiedEmailError(message: string) {
 }
 
 function resolvePersona(value: unknown) {
-  return normalizePersona(value) ?? readStoredPersona();
+  return resolveRoutingPersona(value, readStoredPersona());
 }
 
 function pathMatchesPrefix(pathname: string, prefix: string) {
@@ -67,7 +67,7 @@ function sanitizeNextPath(candidate?: string | null): string | null {
 
 export default function LoginClient({ notice, nextPath }: LoginClientProps) {
   const router = useRouter();
-  const { currentUser, accessibleRestaurants, init } = useAuthStore();
+  const { currentUser, accessibleRestaurants, resumableRestaurantIds, activeRestaurantId, init } = useAuthStore();
   const safeNextPath = sanitizeNextPath(nextPath);
 
   const [email, setEmail] = useState('');
@@ -91,6 +91,13 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
   useEffect(() => {
     if (!currentUser && accessibleRestaurants.length === 0) return;
 
+    const hasResumableManagerRestaurant = resumableRestaurantIds.length > 0;
+
+    if (hasResumableManagerRestaurant && !activeRestaurantId) {
+      navigateToApp('/restaurants', router);
+      return;
+    }
+
     // If login was triggered from a protected page, return there after auth.
     if (safeNextPath) {
       navigateToApp(safeNextPath, router);
@@ -98,14 +105,21 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
     }
 
     const persona = resolvePersona(currentUser?.persona);
-    if (!persona) {
+    if (shouldRequirePersonaSelection(accessibleRestaurants.length, persona)) {
       navigateToApp('/persona', router);
       return;
     }
 
-    const destination = resolvePostAuthDestination(accessibleRestaurants.length, currentUser?.role, persona);
+    const destination = resolvePostAuthDestination(
+      accessibleRestaurants.length,
+      currentUser?.role,
+      persona,
+      currentUser?.hasCompletedRestaurantSetup,
+      hasResumableManagerRestaurant,
+      Boolean(activeRestaurantId),
+    );
     navigateToApp(destination, router);
-  }, [currentUser, accessibleRestaurants, router, safeNextPath]);
+  }, [currentUser, accessibleRestaurants, resumableRestaurantIds, activeRestaurantId, router, safeNextPath]);
 
   const isPasscodeValid = passcode.trim().length >= 6;
   const isEmailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
@@ -144,8 +158,16 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
       setTransitioning(true);
       const {
         accessibleRestaurants: refreshedRestaurants,
+        resumableRestaurantIds: refreshedResumableRestaurantIds,
+        activeRestaurantId: refreshedActiveRestaurantId,
         currentUser: refreshedUser,
       } = useAuthStore.getState();
+      const hasResumableManagerRestaurant = refreshedResumableRestaurantIds.length > 0;
+
+      if (hasResumableManagerRestaurant && !refreshedActiveRestaurantId) {
+        navigateToApp('/restaurants', router);
+        return;
+      }
 
       if (safeNextPath) {
         navigateToApp(safeNextPath, router);
@@ -153,12 +175,15 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
       }
 
       const persona = resolvePersona(refreshedUser?.persona);
-      if (!persona) {
+      if (shouldRequirePersonaSelection(refreshedRestaurants.length, persona)) {
         navigateToApp('/persona', router);
         return;
       }
 
-      if (refreshedRestaurants.length === 1) {
+      if (
+        refreshedRestaurants.length === 1
+        && !refreshedResumableRestaurantIds.includes(refreshedRestaurants[0].id)
+      ) {
         const only = refreshedRestaurants[0];
         useAuthStore.getState().setActiveOrganization(only.id, only.restaurantCode);
       }
@@ -166,6 +191,9 @@ export default function LoginClient({ notice, nextPath }: LoginClientProps) {
         refreshedRestaurants.length,
         refreshedUser?.role,
         persona,
+        refreshedUser?.hasCompletedRestaurantSetup,
+        hasResumableManagerRestaurant,
+        Boolean(refreshedActiveRestaurantId),
       );
       navigateToApp(destination, router);
       return;

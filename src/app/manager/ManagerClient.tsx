@@ -6,6 +6,7 @@ import { Building2, ChevronRight, PlusCircle, Pencil, Trash2 } from 'lucide-reac
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 import { Modal } from '../../components/Modal';
+import { supabase } from '@/lib/supabase/client';
 
 const MANAGER_ROLES = new Set(['admin', 'manager']);
 
@@ -101,7 +102,9 @@ export default function ManagerClient() {
       return;
     }
     if (!canManageSite) {
-      if (!activeRestaurantId && accessibleRestaurants.length > 1) {
+      if (accessibleRestaurants.length === 0) {
+        router.push('/restaurants');
+      } else if (!activeRestaurantId && accessibleRestaurants.length > 1) {
         router.push('/restaurants');
       } else {
         router.push('/dashboard');
@@ -118,6 +121,32 @@ export default function ManagerClient() {
   }
 
   const managerRestaurants = accessibleRestaurants;
+
+  const ensureOwnerAccountProfile = async () => {
+    const { data } = await supabase.auth.getSession();
+    const sessionUser = data.session?.user ?? null;
+    const authUserId =
+      currentUser?.authUserId
+      || sessionUser?.id
+      || null;
+    if (!authUserId) return;
+
+    const ownerName =
+      String(currentUser?.fullName ?? sessionUser?.user_metadata?.full_name ?? sessionUser?.email ?? '')
+        .trim()
+      || null;
+
+    await supabase
+      .from('account_profiles')
+      .upsert(
+        {
+          auth_user_id: authUserId,
+          account_type: 'owner',
+          ...(ownerName ? { owner_name: ownerName } : {}),
+        },
+        { onConflict: 'auth_user_id' },
+      );
+  };
 
   const handleSelectRestaurant = (restaurantId: string) => {
     const selected = managerRestaurants.find((item) => item.id === restaurantId);
@@ -170,6 +199,7 @@ export default function ManagerClient() {
       return;
     }
 
+    await ensureOwnerAccountProfile();
     await refreshProfile();
     setActiveOrganization(result.data.id, result.data.restaurant_code);
     setNewRestaurantName('');
@@ -230,6 +260,7 @@ export default function ManagerClient() {
     }
     await refreshProfile();
     await useAuthStore.getState().fetchSubscriptionStatus();
+    const remainingRestaurants = useAuthStore.getState().accessibleRestaurants.length;
     const successPayload = isDeleteRestaurantResponse(result.data) ? result.data : undefined;
     const quantitySynced = successPayload?.quantitySynced !== false;
     const newQuantity = Number(successPayload?.newQuantity ?? 0);
@@ -251,6 +282,9 @@ export default function ManagerClient() {
     }
     setDeleteSubmitting(false);
     setDeleteTarget(null);
+    if (remainingRestaurants === 0) {
+      router.replace('/restaurants');
+    }
   };
 
   return (

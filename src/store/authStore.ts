@@ -43,13 +43,22 @@ interface SubscriptionDetails {
 
 type AccessibleRestaurant = { id: string; name: string; restaurantCode: string; role: string };
 type AccountProfileType = 'owner' | 'employee';
+type BillingCoverageSnapshot = {
+  billingEnabled?: boolean;
+  active?: boolean;
+  subscription?: { status?: string | null } | null;
+  org_subscriptions?: Array<{ organization_id?: string | null }>;
+};
 type AccountProfileState = {
   accountType: AccountProfileType;
   ownerName: string | null;
+  exists: boolean;
+  hasRestaurantSetupSignal: boolean;
 };
 
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
 const IS_DEV = process.env.NODE_ENV !== 'production';
+const RESTAURANT_SETUP_HISTORY_KEY_PREFIX = 'crewshyft_setup_history:';
 
 function devAuthLog(event: string, payload?: Record<string, unknown>) {
   if (!IS_DEV) return;
@@ -64,6 +73,11 @@ function normalizeAccountType(value: unknown): AccountProfileType {
 function normalizeOwnerName(value: unknown): string | null {
   const normalized = String(value ?? '').trim();
   return normalized || null;
+}
+
+function isManagerCapableRestaurant(role: unknown): boolean {
+  const normalizedRole = String(role ?? '').trim().toLowerCase();
+  return normalizedRole === 'admin' || normalizedRole === 'owner' || normalizedRole === 'manager';
 }
 
 function buildDisplayName({
@@ -98,6 +112,7 @@ interface AuthState {
   currentUser: UserProfile | null;
   userProfiles: UserProfile[];
   accessibleRestaurants: Array<{ id: string; name: string; restaurantCode: string; role: string }>;
+  resumableRestaurantIds: string[];
   pendingInvitations: PendingInvitation[];
   isInitialized: boolean;
   activeRestaurantId: string | null;
@@ -134,7 +149,11 @@ async function fetchPendingInvitations(): Promise<PendingInvitation[]> {
   }));
 }
 
-async function fetchUserProfiles(authUserId: string) {
+async function fetchUserProfiles(
+  authUserId: string,
+  fallbackPersona?: 'manager' | 'employee',
+  hasCompletedRestaurantSetup = false,
+) {
   const { data, error } = (await supabase
     .from('users')
     .select('*')
@@ -149,6 +168,9 @@ async function fetchUserProfiles(authUserId: string) {
 
   const profiles: UserProfile[] = (data || []).map((row) => {
     const normalized = normalizeUserRow(row);
+    // Prefer the DB value, but keep auth metadata/local storage as a fallback
+    // while the users.persona backfill rolls out or a stale schema cache lags behind.
+    const persona = normalizePersona(row.persona) ?? fallbackPersona ?? undefined;
     return {
       id: normalized.id,
       authUserId: normalized.authUserId ?? '',
@@ -162,7 +184,8 @@ async function fetchUserProfiles(authUserId: string) {
       jobPay: normalized.jobPay,
       employeeNumber: normalized.employeeNumber ?? null,
       realEmail: normalized.realEmail ?? null,
-      persona: normalized.persona,
+      persona,
+      hasCompletedRestaurantSetup,
     };
   });
 
@@ -181,12 +204,19 @@ async function fetchAccountProfile(authUserId: string): Promise<AccountProfileSt
 
   if (error) {
     devAuthLog('accountProfile:error', { authUserId, message: error.message });
-    return { accountType: 'owner', ownerName: null };
+    return {
+      accountType: 'owner',
+      ownerName: null,
+      exists: false,
+      hasRestaurantSetupSignal: false,
+    };
   }
 
   return {
     accountType: normalizeAccountType(data?.account_type),
     ownerName: normalizeOwnerName(data?.owner_name),
+    exists: Boolean(data),
+    hasRestaurantSetupSignal: Boolean(normalizeOwnerName(data?.owner_name)),
   };
 }
 
@@ -198,6 +228,8 @@ function applyAccountProfileToUserProfile(
     ...profile,
     accountType: accountProfile.accountType,
     ownerName: accountProfile.ownerName,
+    hasCompletedRestaurantSetup:
+      profile.hasCompletedRestaurantSetup ?? accountProfile.hasRestaurantSetupSignal,
     fullName: buildDisplayName({
       accountType: accountProfile.accountType,
       ownerName: accountProfile.ownerName,
@@ -210,8 +242,17 @@ function applyAccountProfileToUserProfile(
 function resolveActiveRestaurantSelection(
   accessibleRestaurants: AccessibleRestaurant[],
   storedActiveId: string | null,
+  resumableRestaurantIds: string[] = [],
 ) {
+  const resumableSet = new Set(resumableRestaurantIds);
+
   if (accessibleRestaurants.length === 1) {
+    if (resumableSet.has(accessibleRestaurants[0].id)) {
+      return {
+        activeRestaurantId: null,
+        activeRestaurantCode: null,
+      };
+    }
     return {
       activeRestaurantId: accessibleRestaurants[0].id,
       activeRestaurantCode: accessibleRestaurants[0].restaurantCode,
@@ -221,7 +262,7 @@ function resolveActiveRestaurantSelection(
   if (accessibleRestaurants.length > 1) {
     const storedIsValid = Boolean(storedActiveId)
       && accessibleRestaurants.some((restaurant) => restaurant.id === storedActiveId);
-    if (storedIsValid) {
+    if (storedIsValid && !resumableSet.has(String(storedActiveId))) {
       return {
         activeRestaurantId: storedActiveId,
         activeRestaurantCode:
@@ -236,10 +277,45 @@ function resolveActiveRestaurantSelection(
   };
 }
 
+async function fetchResumableRestaurantIds(
+  accessibleRestaurants: AccessibleRestaurant[],
+): Promise<string[]> {
+  if (!BILLING_ENABLED || accessibleRestaurants.length === 0) return [];
+
+  const managerRestaurants = accessibleRestaurants.filter((restaurant) =>
+    isManagerCapableRestaurant(restaurant.role),
+  );
+  if (managerRestaurants.length === 0) return [];
+
+  const result = await apiFetch<BillingCoverageSnapshot>('/api/billing/subscription-status', {
+    cache: 'no-store',
+  });
+  if (!result.ok || !result.data || result.data.billingEnabled === false) return [];
+
+  const hasActiveBundledCoverage = Boolean(result.data.active && result.data.subscription);
+  if (hasActiveBundledCoverage) return [];
+
+  const orgSubscriptions = new Set(
+    (result.data.org_subscriptions ?? [])
+      .map((subscription) => String(subscription.organization_id ?? '').trim())
+      .filter(Boolean),
+  );
+
+  return managerRestaurants
+    .filter((restaurant) => !orgSubscriptions.has(restaurant.id))
+    .map((restaurant) => restaurant.id);
+}
+
 function buildSessionFallbackProfile(
   authUser: User,
   activeRestaurantId: string | null,
-  accountProfile: AccountProfileState = { accountType: 'owner', ownerName: null },
+  accountProfile: AccountProfileState = {
+    accountType: 'owner',
+    ownerName: null,
+    exists: false,
+    hasRestaurantSetupSignal: false,
+  },
+  hasCompletedRestaurantSetup = false,
 ): UserProfile {
   const metadata = (authUser.user_metadata ?? {}) as Record<string, unknown>;
   const metadataRole = metadata.role;
@@ -263,7 +339,7 @@ function buildSessionFallbackProfile(
     email,
     phone: null,
     fullName,
-    role: getUserRole(metadataRole),
+    role: getUserRole(metadataRole ?? (persona === 'manager' ? 'MANAGER' : 'EMPLOYEE')),
     accountType: accountProfile.accountType,
     ownerName: accountProfile.ownerName,
     jobs: [],
@@ -272,7 +348,75 @@ function buildSessionFallbackProfile(
     employeeNumber: null,
     realEmail: email,
     persona,
+    hasCompletedRestaurantSetup,
   };
+}
+
+function readRestaurantSetupHistory(authUserId: string | null | undefined): boolean {
+  if (typeof window === 'undefined') return false;
+  const normalizedAuthUserId = String(authUserId ?? '').trim();
+  if (!normalizedAuthUserId) return false;
+  try {
+    return localStorage.getItem(`${RESTAURANT_SETUP_HISTORY_KEY_PREFIX}${normalizedAuthUserId}`) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function persistRestaurantSetupHistory(authUserId: string | null | undefined) {
+  if (typeof window === 'undefined') return;
+  const normalizedAuthUserId = String(authUserId ?? '').trim();
+  if (!normalizedAuthUserId) return;
+  try {
+    localStorage.setItem(`${RESTAURANT_SETUP_HISTORY_KEY_PREFIX}${normalizedAuthUserId}`, '1');
+  } catch {
+    // ignore
+  }
+}
+
+function resolveCompletedRestaurantSetup(
+  authUserId: string | null | undefined,
+  membershipCount: number,
+  accountProfile: AccountProfileState,
+) {
+  return (
+    membershipCount > 0
+    || accountProfile.hasRestaurantSetupSignal
+    || readRestaurantSetupHistory(authUserId)
+  );
+}
+
+async function ensureCompletedManagerSetupProfile(
+  authUserId: string | null | undefined,
+  accessibleRestaurants: AccessibleRestaurant[],
+  accountProfile: AccountProfileState,
+) {
+  const normalizedAuthUserId = String(authUserId ?? '').trim();
+  if (!normalizedAuthUserId || accountProfile.exists || accessibleRestaurants.length === 0) return;
+
+  const hasManagerMembership = accessibleRestaurants.some((restaurant) => {
+    const role = String(restaurant.role ?? '').trim().toLowerCase();
+    return role === 'admin' || role === 'owner' || role === 'manager';
+  });
+
+  if (!hasManagerMembership) return;
+
+  const { error } = await supabase
+    .from('account_profiles')
+    .upsert(
+      {
+        auth_user_id: normalizedAuthUserId,
+        account_type: 'owner',
+      },
+      { onConflict: 'auth_user_id' },
+    );
+
+  if (error) {
+    devAuthLog('accountProfile:ensureCompletedSetup:error', {
+      authUserId: normalizedAuthUserId,
+      message: error.message,
+    });
+  }
 }
 
 /** Set a short-lived cookie that middleware checks to avoid DB queries */
@@ -305,6 +449,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   currentUser: null,
   userProfiles: [],
   accessibleRestaurants: [],
+  resumableRestaurantIds: [],
   pendingInvitations: [],
   subscriptionStatus: BILLING_ENABLED ? 'loading' : 'active',
   subscriptionDetails: null,
@@ -321,6 +466,10 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   init: async () => {
     const { data } = await supabase.auth.getSession();
     const sessionUser = data.session?.user ?? null;
+    const sessionMetadataPersona =
+      normalizePersona((sessionUser?.user_metadata as Record<string, unknown> | undefined)?.persona)
+      ?? readStoredPersona()
+      ?? undefined;
     devAuthLog('init:getSession', {
       hasSession: Boolean(sessionUser),
       userId: sessionUser?.id ?? null,
@@ -331,6 +480,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       set({
         currentUser: null,
         userProfiles: [],
+        accessibleRestaurants: [],
+        resumableRestaurantIds: [],
         pendingInvitations: [],
         isInitialized: true,
         activeRestaurantId: null,
@@ -342,7 +493,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     try {
       // Fetch profiles, restaurants, and invitations in parallel
       const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
-        fetchUserProfiles(sessionUser.id),
+        fetchUserProfiles(sessionUser.id, sessionMetadataPersona),
         apiFetch<RestaurantsResponse | Array<Record<string, unknown>>>('/api/auth/restaurants'),
         fetchPendingInvitations(),
         fetchAccountProfile(sessionUser.id),
@@ -360,6 +511,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           role: String(row.role ?? ''),
         })
       );
+      const hasCompletedRestaurantSetup = resolveCompletedRestaurantSetup(
+        sessionUser.id,
+        accessibleRestaurants.length,
+        accountProfile,
+      );
+      const resumableRestaurantIds = await fetchResumableRestaurantIds(accessibleRestaurants);
+      if (accessibleRestaurants.length > 0) {
+        persistRestaurantSetupHistory(sessionUser.id);
+        await ensureCompletedManagerSetupProfile(sessionUser.id, accessibleRestaurants, accountProfile);
+      }
       devAuthLog('init:loadedData', {
         profileCount: profiles.length,
         membershipCount: accessibleRestaurants.length,
@@ -372,6 +533,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       const { activeRestaurantId, activeRestaurantCode } = resolveActiveRestaurantSelection(
         accessibleRestaurants,
         storedActiveId,
+        resumableRestaurantIds,
       );
       const primaryProfile = profiles[0] ?? null;
       if (!primaryProfile) {
@@ -384,6 +546,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           sessionUser,
           activeRestaurantId,
           accountProfile,
+          hasCompletedRestaurantSetup,
         );
         const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
         set({
@@ -393,6 +556,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           },
           userProfiles: [],
           accessibleRestaurants,
+          resumableRestaurantIds,
           pendingInvitations: invitations,
           isInitialized: true,
           activeRestaurantId,
@@ -408,8 +572,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         return;
       }
 
+      const profilesWithSetupState = profiles.map((profile) => ({
+        ...profile,
+        hasCompletedRestaurantSetup,
+      }));
       const activeProfile =
-        profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+        profilesWithSetupState.find((profile) => profile.organizationId === activeRestaurantId)
+        ?? profilesWithSetupState[0];
       const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
       const resolvedActiveProfile = activeProfile
         ? applyAccountProfileToUserProfile(
@@ -423,8 +592,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
       set({
         currentUser: resolvedActiveProfile,
-        userProfiles: profiles,
+        userProfiles: profilesWithSetupState,
         accessibleRestaurants,
+        resumableRestaurantIds,
         pendingInvitations: invitations,
         isInitialized: true,
         activeRestaurantId,
@@ -458,6 +628,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         currentUser: fallbackProfile,
         userProfiles: [],
         accessibleRestaurants: [],
+        resumableRestaurantIds: [],
         pendingInvitations: [],
         isInitialized: true,
         activeRestaurantId: null,
@@ -467,11 +638,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   },
 
   refreshProfile: async () => {
-    let authUserId = get().currentUser?.authUserId;
-    if (!authUserId) {
-      const { data } = await supabase.auth.getSession();
-      authUserId = data.session?.user?.id;
-    }
+    const { data: sessionData } = await supabase.auth.getSession();
+    const sessionUser = sessionData.session?.user ?? null;
+    const sessionMetadataPersona =
+      normalizePersona((sessionUser?.user_metadata as Record<string, unknown> | undefined)?.persona)
+      ?? readStoredPersona()
+      ?? undefined;
+    let authUserId = get().currentUser?.authUserId ?? sessionUser?.id;
     devAuthLog('refreshProfile:start', {
       authUserId: authUserId ?? null,
     });
@@ -479,7 +652,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 
     // Fetch profiles, restaurants, and invitations in parallel
     const [profiles, restaurantsResult, invitations, accountProfile] = await Promise.all([
-      fetchUserProfiles(authUserId),
+      fetchUserProfiles(authUserId, sessionMetadataPersona),
       apiFetch<RestaurantsResponse | Array<Record<string, unknown>>>('/api/auth/restaurants'),
       fetchPendingInvitations(),
       fetchAccountProfile(authUserId),
@@ -497,6 +670,16 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         role: String(row.role ?? ''),
       })
     );
+    const hasCompletedRestaurantSetup = resolveCompletedRestaurantSetup(
+      authUserId,
+      accessibleRestaurants.length,
+      accountProfile,
+    );
+    const resumableRestaurantIds = await fetchResumableRestaurantIds(accessibleRestaurants);
+    if (accessibleRestaurants.length > 0) {
+      persistRestaurantSetupHistory(authUserId);
+      await ensureCompletedManagerSetupProfile(authUserId, accessibleRestaurants, accountProfile);
+    }
     devAuthLog('refreshProfile:loadedData', {
       profileCount: profiles.length,
       membershipCount: accessibleRestaurants.length,
@@ -509,12 +692,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     const { activeRestaurantId, activeRestaurantCode } = resolveActiveRestaurantSelection(
       accessibleRestaurants,
       storedActiveId,
+      resumableRestaurantIds,
     );
 
     const primaryProfile = profiles[0] ?? null;
     if (!primaryProfile) {
-      const { data } = await supabase.auth.getSession();
-      const sessionUser = data.session?.user ?? null;
       if (!sessionUser) return;
       devAuthLog('refreshProfile:fallbackProfile', {
         reason: 'no-users-row',
@@ -526,6 +708,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         sessionUser,
         activeRestaurantId,
         accountProfile,
+        hasCompletedRestaurantSetup,
       );
       const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
       set({
@@ -535,6 +718,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
         },
         userProfiles: [],
         accessibleRestaurants,
+        resumableRestaurantIds,
         pendingInvitations: invitations,
         activeRestaurantId,
         activeRestaurantCode,
@@ -550,8 +734,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       return;
     }
 
+    const profilesWithSetupState = profiles.map((profile) => ({
+      ...profile,
+      hasCompletedRestaurantSetup,
+    }));
     const activeProfile =
-      profiles.find((profile) => profile.organizationId === activeRestaurantId) ?? primaryProfile;
+      profilesWithSetupState.find((profile) => profile.organizationId === activeRestaurantId)
+      ?? profilesWithSetupState[0];
     const activeMembership = accessibleRestaurants.find((row) => row.id === activeRestaurantId);
     const resolvedActiveProfile = activeProfile
       ? applyAccountProfileToUserProfile(
@@ -564,8 +753,9 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       : activeProfile;
     set({
       currentUser: resolvedActiveProfile,
-      userProfiles: profiles,
+      userProfiles: profilesWithSetupState,
       accessibleRestaurants,
+      resumableRestaurantIds,
       pendingInvitations: invitations,
       activeRestaurantId,
       activeRestaurantCode,
@@ -730,6 +920,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       currentUser: null,
       userProfiles: [],
       accessibleRestaurants: [],
+      resumableRestaurantIds: [],
       pendingInvitations: [],
       isInitialized: true,
       activeRestaurantId: null,
