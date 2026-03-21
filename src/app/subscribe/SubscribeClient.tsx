@@ -58,7 +58,8 @@ export default function SubscribeClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const canceled = searchParams.get('canceled');
-  const intentId = String(searchParams.get('intent') ?? '').trim() || null;
+  // Support both ?intentId= (new create flow) and ?intent= (legacy)
+  const intentId = String(searchParams.get('intentId') ?? searchParams.get('intent') ?? '').trim() || null;
 
   const { currentUser, activeRestaurantId, isInitialized, init } = useAuthStore();
 
@@ -67,6 +68,7 @@ export default function SubscribeClient() {
   const [existingSub, setExistingSub] = useState<SubscriptionInfo | null>(null);
   const [checkingStatus, setCheckingStatus] = useState(true);
   const [portalLoading, setPortalLoading] = useState(false);
+  const [restaurantName, setRestaurantName] = useState<string | null>(null);
 
   // Initialize auth if needed
   useEffect(() => {
@@ -96,6 +98,22 @@ export default function SubscribeClient() {
     check();
     return () => { mounted = false; };
   }, [activeRestaurantId, intentId]);
+
+  // Fetch restaurant name from pending intent when coming from create-restaurant flow
+  useEffect(() => {
+    if (!intentId) return;
+    let mounted = true;
+    async function fetchName() {
+      const result = await apiFetch<{ restaurantName: string }>(
+        `/api/orgs/intent-name?intentId=${encodeURIComponent(intentId!)}`,
+      );
+      if (mounted && result.ok && result.data?.restaurantName) {
+        setRestaurantName(result.data.restaurantName);
+      }
+    }
+    void fetchName();
+    return () => { mounted = false; };
+  }, [intentId]);
 
   // Redirect to restaurants if no org selected
   useEffect(() => {
@@ -285,10 +303,14 @@ export default function SubscribeClient() {
           <div className="text-center mb-10">
             <Logo />
             <h1 className="text-2xl sm:text-3xl font-bold text-theme-primary">
-              Choose your plan
+              {intentId
+                ? `Subscribe to activate ${restaurantName ?? 'your restaurant'}`
+                : 'Choose your plan'}
             </h1>
             <p className="text-theme-tertiary mt-2">
-              One plan. Everything you need to manage your team.
+              {intentId
+                ? 'Choose a plan to complete setup for this restaurant.'
+                : 'One plan. Everything you need to manage your team.'}
             </p>
           </div>
 

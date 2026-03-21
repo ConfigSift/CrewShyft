@@ -37,6 +37,8 @@ export async function POST(request: NextRequest) {
     return applySupabaseCookies(jsonError(message, 401), response);
   }
 
+  const MANAGER_ROLE_VALUES = new Set(['admin', 'manager', 'owner', 'super_admin']);
+
   if (organizationId) {
     const { data: membership } = await supabaseAdmin
       .from('organization_memberships')
@@ -46,12 +48,46 @@ export async function POST(request: NextRequest) {
       .maybeSingle();
 
     const role = String(membership?.role ?? '').trim().toLowerCase();
-    if (!membership || (role !== 'admin' && role !== 'manager')) {
+    if (!membership || !MANAGER_ROLE_VALUES.has(role)) {
       return applySupabaseCookies(
         jsonError('Only admins can manage billing.', 403),
         response,
       );
     }
+
+    // Prefer the org-level stripe_customer_id from the subscriptions table.
+    const { data: orgSub } = await supabaseAdmin
+      .from('subscriptions')
+      .select('stripe_customer_id, stripe_subscription_id')
+      .eq('organization_id', organizationId)
+      .maybeSingle();
+
+    const orgStripeCustomerId =
+      (orgSub as { stripe_customer_id?: string | null } | null)?.stripe_customer_id ?? null;
+
+    if (orgStripeCustomerId) {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
+      try {
+        const portalSession = await stripe.billingPortal.sessions.create({
+          customer: orgStripeCustomerId,
+          return_url: `${appUrl}/billing?portal=1&organizationId=${organizationId}`,
+        });
+        return applySupabaseCookies(NextResponse.json({ url: portalSession.url }), response);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[billing:portal] stripe.billingPortal.sessions.create failed:', {
+          organizationId,
+          stripeCustomerId: orgStripeCustomerId,
+          error: message,
+        });
+        return applySupabaseCookies(
+          NextResponse.json({ error: message || 'Unable to create billing portal session.' }, { status: 500 }),
+          response,
+        );
+      }
+    }
+
+    console.warn('[billing:portal] no stripe_customer_id found for org:', organizationId, '— falling back to legacy path');
   }
 
   const billingResult = await getBillingAccountByAuthUserId(authUserId, supabaseAdmin);
@@ -79,6 +115,7 @@ export async function POST(request: NextRequest) {
   }
 
   if (!stripeCustomerId) {
+    console.error('[billing:portal] no stripe_customer_id found for user:', authUserId, 'organizationId:', organizationId);
     return applySupabaseCookies(
       NextResponse.json(
         { error: 'No Stripe billing account found. Please complete checkout first.' },

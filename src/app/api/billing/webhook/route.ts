@@ -4,6 +4,7 @@ import { createClient } from '@supabase/supabase-js';
 import { stripe } from '@/lib/stripe/server';
 import { STRIPE_WEBHOOK_SECRET } from '@/lib/stripe/config';
 import { supabaseAdmin } from '@/lib/supabase/admin';
+import { generateRestaurantCode } from '@/utils/restaurantCode';
 import {
   isMissingTableError,
   resolveAuthUserIdFromStripeCustomer,
@@ -510,6 +511,163 @@ export async function POST(request: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
+// Intent commit (webhook safety-net for new per-org restaurant creation flow)
+// ---------------------------------------------------------------------------
+
+/**
+ * Commits a pending organization creation intent during the webhook.
+ * This is a safety net — the success page's finalize-checkout flow is the
+ * primary path. If the user closes the browser before the redirect, this
+ * ensures the org is still created when Stripe fires the webhook.
+ * Returns the new organizationId on success, null on failure or skip.
+ */
+async function commitIntentInWebhook(
+  supabaseAdminClient: typeof supabaseAdmin,
+  intentId: string,
+  authUserId: string,
+  eventId: string,
+): Promise<string | null> {
+  const { data: intent } = await supabaseAdminClient
+    .from('organization_create_intents')
+    .select('id,status,organization_id,restaurant_name,location_name')
+    .eq('id', intentId)
+    .eq('auth_user_id', authUserId)
+    .maybeSingle();
+
+  if (!intent) {
+    console.warn('[billing:webhook] commitIntentInWebhook: intent not found', { eventId, intentId, authUserId });
+    return null;
+  }
+
+  // Idempotency: already committed by the success-page flow
+  const typedIntent = intent as {
+    id: string;
+    status: string;
+    organization_id: string | null;
+    restaurant_name: string;
+    location_name: string | null;
+  };
+  if (typedIntent.organization_id) {
+    if (typedIntent.status !== 'completed') {
+      await supabaseAdminClient
+        .from('organization_create_intents')
+        .update({ status: 'completed', updated_at: new Date().toISOString() })
+        .eq('id', intentId);
+    }
+    console.log('[billing:webhook] commitIntentInWebhook: already committed', {
+      eventId, intentId, organizationId: typedIntent.organization_id,
+    });
+    return typedIntent.organization_id;
+  }
+
+  if (typedIntent.status !== 'pending') {
+    console.warn('[billing:webhook] commitIntentInWebhook: intent not pending', {
+      eventId, intentId, status: typedIntent.status,
+    });
+    return null;
+  }
+
+  // Create organization (retry up to 5 times for restaurant_code collisions)
+  let createdOrgId: string | null = null;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const candidateCode = generateRestaurantCode();
+    const { data: orgData, error: orgError } = await supabaseAdminClient
+      .from('organizations')
+      .insert({ name: typedIntent.restaurant_name, restaurant_code: candidateCode })
+      .select('id')
+      .single();
+
+    if (!orgError && orgData) {
+      createdOrgId = (orgData as { id: string }).id;
+      break;
+    }
+    const isDuplicate = orgError?.code === '23505';
+    if (!isDuplicate) {
+      console.error('[billing:webhook] commitIntentInWebhook: org insert failed', {
+        eventId, intentId, error: orgError?.message,
+      });
+      return null;
+    }
+  }
+
+  if (!createdOrgId) {
+    console.error('[billing:webhook] commitIntentInWebhook: could not generate unique restaurant code', {
+      eventId, intentId,
+    });
+    return null;
+  }
+
+  try {
+    // Membership
+    await supabaseAdminClient
+      .from('organization_memberships')
+      .upsert(
+        { organization_id: createdOrgId, auth_user_id: authUserId, role: 'admin' },
+        { onConflict: 'organization_id,auth_user_id' },
+      );
+
+    // User profile — use existing profile data if present, otherwise default
+    const { data: existingUser } = await supabaseAdminClient
+      .from('users')
+      .select('full_name,email,phone,jobs')
+      .eq('auth_user_id', authUserId)
+      .limit(1)
+      .maybeSingle();
+
+    const typedUser = existingUser as {
+      full_name?: string;
+      email?: string;
+      phone?: string;
+      jobs?: unknown[];
+    } | null;
+    const fullName = String(typedUser?.full_name ?? '').trim() || 'Team Member';
+    const email = String(typedUser?.email ?? '').trim() || null;
+    const phone = String(typedUser?.phone ?? '').trim() || null;
+    const jobs = Array.isArray(typedUser?.jobs) ? typedUser.jobs : [];
+
+    await supabaseAdminClient
+      .from('users')
+      .upsert(
+        { auth_user_id: authUserId, organization_id: createdOrgId, email, full_name: fullName, phone, role: 'admin', jobs },
+        { onConflict: 'organization_id,auth_user_id' },
+      );
+
+    // Location (optional)
+    const locationName = String(typedIntent.location_name ?? '').trim();
+    if (locationName) {
+      await supabaseAdminClient
+        .from('locations')
+        .insert({ organization_id: createdOrgId, name: locationName, sort_order: 0 });
+    }
+
+    // Mark intent completed
+    await supabaseAdminClient
+      .from('organization_create_intents')
+      .update({
+        status: 'completed',
+        organization_id: createdOrgId,
+        updated_at: new Date().toISOString(),
+        last_error: null,
+      })
+      .eq('id', intentId);
+
+    console.log('[billing:webhook] commitIntentInWebhook: success', { eventId, intentId, organizationId: createdOrgId });
+    return createdOrgId;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error('[billing:webhook] commitIntentInWebhook: failed, rolling back', { eventId, intentId, error: message });
+    await supabaseAdminClient.from('organization_memberships').delete().eq('organization_id', createdOrgId);
+    await supabaseAdminClient.from('users').delete().eq('organization_id', createdOrgId);
+    await supabaseAdminClient.from('organizations').delete().eq('id', createdOrgId);
+    await supabaseAdminClient
+      .from('organization_create_intents')
+      .update({ status: 'failed', updated_at: new Date().toISOString(), last_error: { message } })
+      .eq('id', intentId);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Event handlers
 // ---------------------------------------------------------------------------
 
@@ -552,18 +710,54 @@ async function handleCheckoutCompleted(
   }
 
   if (!organizationId) {
-    console.log('[billing:webhook] checkout.session.completed has no organization metadata, billing account only', {
-      eventId,
-      subscriptionId: subscription.id,
-      status: subscription.status,
-    });
-    await upsertBillingAccountRow(
-      supabaseAdminClient,
-      subscription,
-      'checkout.session.completed',
-      eventId,
-    );
-    return;
+    // Check for a pending intent — new per-org restaurant creation flow.
+    // The success page is the primary commit path; this is the safety net
+    // for users who close the browser before the redirect completes.
+    const pendingIntentId =
+      String(subscription.metadata?.intent_id ?? session.metadata?.intent_id ?? '').trim() || null;
+
+    if (pendingIntentId) {
+      const authUserId = await resolveAuthUserIdForSubscription(supabaseAdminClient, subscription);
+      if (authUserId) {
+        const committedOrgId = await commitIntentInWebhook(
+          supabaseAdminClient,
+          pendingIntentId,
+          authUserId,
+          eventId,
+        );
+        if (committedOrgId) {
+          organizationId = committedOrgId;
+          // Patch organization_id onto the Stripe subscription metadata so that
+          // future subscription events (updates, renewals) can resolve the org.
+          try {
+            await stripe.subscriptions.update(subscription.id, {
+              metadata: { ...subscription.metadata, organization_id: committedOrgId },
+            });
+          } catch (patchErr) {
+            console.warn('[billing:webhook] failed to patch subscription metadata with organization_id', {
+              eventId,
+              subscriptionId: subscription.id,
+              error: patchErr instanceof Error ? patchErr.message : String(patchErr),
+            });
+          }
+        }
+      }
+    }
+
+    if (!organizationId) {
+      console.log('[billing:webhook] checkout.session.completed has no organization metadata, billing account only', {
+        eventId,
+        subscriptionId: subscription.id,
+        status: subscription.status,
+      });
+      await upsertBillingAccountRow(
+        supabaseAdminClient,
+        subscription,
+        'checkout.session.completed',
+        eventId,
+      );
+      return;
+    }
   }
 
   console.log('[billing:webhook] checkout subscription details', {

@@ -44,31 +44,33 @@ export default async function StartPage() {
 
   const membershipList = memberships ?? [];
   if (membershipList.length === 0) {
-    redirect(persona === 'manager' ? '/restaurants' : '/join');
+    redirect(persona === 'manager' ? '/onboarding' : '/join');
   }
 
   if (BILLING_ENABLED) {
-    const ownedOrgCount = membershipList.filter((membership) => {
-      const role = String(membership.role ?? '').trim().toLowerCase();
-      return role === 'admin' || role === 'owner';
-    }).length;
+    const ownedOrgIds = membershipList
+      .filter((membership) => {
+        const role = String(membership.role ?? '').trim().toLowerCase();
+        return role === 'admin' || role === 'owner';
+      })
+      .map((membership) => membership.organization_id as string);
 
-    if (ownedOrgCount > 0) {
-      const { data: billingAccount } = await supabaseAdmin
-        .from('billing_accounts')
-        .select('status,quantity')
-        .eq('auth_user_id', userId)
-        .maybeSingle();
+    if (ownedOrgIds.length > 0) {
+      // Per-org billing: each restaurant has its own row in the subscriptions table.
+      const { data: orgSubs } = await supabaseAdmin
+        .from('subscriptions')
+        .select('organization_id, status')
+        .in('organization_id', ownedOrgIds);
 
-      const status = String(billingAccount?.status ?? '').trim().toLowerCase();
-      const quantity = Math.max(0, Number(billingAccount?.quantity ?? 0));
+      const activeOrgIds = new Set(
+        (orgSubs ?? [])
+          .filter((sub) => isActiveBillingStatus(String(sub.status ?? '').trim().toLowerCase()))
+          .map((sub) => sub.organization_id as string),
+      );
 
-      if (!isActiveBillingStatus(status)) {
-        redirect('/subscribe');
-      }
-
-      if (quantity < ownedOrgCount) {
-        redirect('/billing?upgrade=1');
+      if (activeOrgIds.size < ownedOrgIds.length) {
+        // Some or all owned orgs lack an active subscription.
+        redirect(activeOrgIds.size === 0 ? '/subscribe' : '/billing?upgrade=1');
       }
     }
   }

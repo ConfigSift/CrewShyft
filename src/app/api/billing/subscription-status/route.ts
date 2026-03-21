@@ -11,7 +11,7 @@ import {
   refreshBillingAccountFromStripe,
   upsertBillingAccountFromSubscription,
 } from '@/lib/billing/customer';
-import { checkOrgsCoverage } from '@/lib/billing/orgSubscription';
+import { checkOrgsCoverage, getOrgSubscription, type OrgSubscriptionRow } from '@/lib/billing/orgSubscription';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 
 export const dynamic = 'force-dynamic';
@@ -151,6 +151,87 @@ export async function GET(request: NextRequest) {
         ? 'Not signed in. Please sign out/in again.'
         : authError?.message || 'Unauthorized.';
     return applySupabaseCookies(jsonError(message, 401), response);
+  }
+
+  // ── Restaurant-scoped fast path ──
+  // When organizationId is provided (from the billing page scoped to a restaurant),
+  // return data only for that specific org rather than all user-owned orgs.
+  const organizationId = String(request.nextUrl.searchParams.get('organizationId') ?? '').trim() || null;
+  if (organizationId) {
+    const { data: membership } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('role')
+      .eq('auth_user_id', authUserId)
+      .eq('organization_id', organizationId)
+      .maybeSingle();
+
+    const memberRole = normalizeRole(membership?.role);
+    if (!membership || !MANAGER_ROLE_VALUES.has(memberRole)) {
+      return applySupabaseCookies(jsonError('Access denied.', 403), response);
+    }
+
+    const [orgSubResult, { data: orgRow }] = await Promise.all([
+      getOrgSubscription(organizationId, supabaseAdmin),
+      supabaseAdmin.from('organizations').select('name').eq('id', organizationId).maybeSingle(),
+    ]);
+
+    const sub = orgSubResult.data as OrgSubscriptionRow | null;
+    const orgName = (orgRow as { name?: string } | null)?.name ?? 'Restaurant';
+    const isActive = sub ? isActiveBillingStatus(sub.status) : false;
+
+    const orgSubscriptions = sub
+      ? [{
+          organization_id: organizationId,
+          organization_name: orgName,
+          status: sub.status,
+          stripe_subscription_id: sub.stripe_subscription_id,
+          stripe_price_id: sub.stripe_price_id,
+          quantity: sub.quantity,
+          current_period_end: sub.current_period_end,
+          cancel_at_period_end: sub.cancel_at_period_end,
+          billing_mode: sub.billing_mode,
+        }]
+      : [];
+
+    const uncoveredOrgs = !isActive
+      ? [{ organization_id: organizationId, organization_name: orgName }]
+      : [];
+
+    if (hasNextRedirect) {
+      if (isActive) {
+        return applyCookiesAndBillingState(
+          NextResponse.redirect(new URL(nextPath ?? '/dashboard', request.url), { status: 302 }),
+          response,
+          true,
+        );
+      }
+      return applyCookiesAndBillingState(
+        NextResponse.redirect(buildSubscribeRedirectUrl(request, nextPath), { status: 302 }),
+        response,
+        false,
+      );
+    }
+
+    return applyCookiesAndBillingState(
+      NextResponse.json({
+        billingEnabled: true,
+        active: isActive,
+        status: sub?.status ?? 'none',
+        cancel_at_period_end: sub?.cancel_at_period_end ?? false,
+        current_period_end: sub?.current_period_end ?? null,
+        subscription: null,
+        owned_org_count: 1,
+        required_quantity: 1,
+        over_limit: false,
+        org_subscriptions: orgSubscriptions,
+        has_per_org_billing: Boolean(sub),
+        covered_org_count: isActive ? 1 : 0,
+        uncovered_org_count: isActive ? 0 : 1,
+        uncovered_orgs: uncoveredOrgs,
+      }),
+      response,
+      isActive,
+    );
   }
 
   const [{ data: profileRows }, { data: memberships, count: membershipCount, error: membershipError }] = await Promise.all([

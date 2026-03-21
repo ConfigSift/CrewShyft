@@ -4,9 +4,7 @@ import { jsonError } from '@/lib/apiResponses';
 import { supabaseAdmin } from '@/lib/supabase/admin';
 import {
   getOwnedOrganizationCount,
-  isActiveBillingStatus,
   OWNED_MEMBERSHIP_ROLES,
-  refreshBillingAccountFromStripe,
 } from '@/lib/billing/customer';
 import { BILLING_ENABLED } from '@/lib/stripe/config';
 
@@ -71,6 +69,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Expire stale pending intents from more than 24 h ago (runs regardless of billing mode).
   const cleanupBefore = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   await supabaseAdmin
     .from('organization_create_intents')
@@ -83,6 +82,51 @@ export async function POST(request: NextRequest) {
     .eq('status', 'pending')
     .lt('created_at', cleanupBefore);
 
+  // ── Billing-disabled (pilot) fast path ──
+  // Skip all Stripe/billing_accounts lookups entirely — just create the intent
+  // and tell the client billing is off so it commits immediately.
+  if (!BILLING_ENABLED) {
+    const { data: insertedIntent, error: insertError } = await supabaseAdmin
+      .from('organization_create_intents')
+      .insert({
+        auth_user_id: authUserId,
+        restaurant_name: restaurantName,
+        location_name: String(payload.locationName ?? '').trim() || null,
+        timezone: String(payload.timezone ?? '').trim() || null,
+        address: String(payload.address ?? '').trim() || null,
+        city: String(payload.city ?? '').trim() || null,
+        state: String(payload.state ?? '').trim() || null,
+        zip: String(payload.zip ?? '').trim() || null,
+        status: 'pending',
+        desired_quantity: 1,
+        updated_at: new Date().toISOString(),
+      })
+      .select('id,desired_quantity')
+      .single();
+
+    if (insertError || !insertedIntent) {
+      return applySupabaseCookies(
+        NextResponse.json({ error: insertError?.message ?? 'Unable to create intent.' }, { status: 500 }),
+        response,
+      );
+    }
+
+    return applySupabaseCookies(
+      NextResponse.json({
+        intentId: insertedIntent.id,
+        desiredQuantity: 1,
+        ownedOrgCount: 0,
+        billingEnabled: false,
+        hasActiveSubscription: false,
+        needsUpgrade: false,
+      }),
+      response,
+    );
+  }
+
+  // ── Billing-enabled path (per-org model) ──
+  // Each restaurant gets its own Stripe subscription (quantity = 1).
+  // No billing_accounts lookup needed — the client will redirect to /subscribe.
   const ownedCountResult = await getOwnedOrganizationCount(authUserId, supabaseAdmin);
   if (ownedCountResult.error) {
     return applySupabaseCookies(
@@ -93,21 +137,6 @@ export async function POST(request: NextRequest) {
 
   const ownedOrgCount = ownedCountResult.count;
   const desiredQuantity = Math.max(1, ownedOrgCount + 1);
-
-  const billingAccountResult = await refreshBillingAccountFromStripe(authUserId, supabaseAdmin);
-  if (billingAccountResult.error) {
-    return applySupabaseCookies(
-      NextResponse.json({ error: 'Unable to check billing account.' }, { status: 500 }),
-      response,
-    );
-  }
-
-  const billingAccount = billingAccountResult.data;
-  const hasActiveSubscription = isActiveBillingStatus(billingAccount?.status);
-  const currentQuantity = Math.max(0, Number(billingAccount?.quantity ?? 0));
-  const needsUpgrade =
-    BILLING_ENABLED &&
-    (!hasActiveSubscription || currentQuantity < desiredQuantity);
 
   const { data: insertedIntent, error: insertError } = await supabaseAdmin
     .from('organization_create_intents')
@@ -139,9 +168,9 @@ export async function POST(request: NextRequest) {
       intentId: insertedIntent.id,
       desiredQuantity: insertedIntent.desired_quantity,
       ownedOrgCount,
-      billingEnabled: BILLING_ENABLED,
-      hasActiveSubscription,
-      needsUpgrade,
+      billingEnabled: true,
+      hasActiveSubscription: false,
+      needsUpgrade: false,
     }),
     response,
   );

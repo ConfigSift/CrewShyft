@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { applySupabaseCookies, createSupabaseRouteClient } from '@/lib/supabase/route';
+import { supabaseAdmin } from '@/lib/supabase/admin';
 
 type Persona = 'manager' | 'employee';
 
@@ -33,23 +34,29 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const updateResult = await supabase
+  // Update users table via admin client (bypasses RLS — new users may have no row yet,
+  // and the user-session client's RLS policies don't cover NULL organization_id rows).
+  // A 0-row update is acceptable: the auth user_metadata write below is the reliable fallback.
+  const updateResult = await supabaseAdmin
     .from('users')
     .update({ persona })
     .eq('auth_user_id', authUserId);
 
   if (updateResult.error) {
+    console.error('[/api/me/persona] users.update error:', updateResult.error.message);
     return applySupabaseCookies(
       NextResponse.json({ error: updateResult.error.message }, { status: 400 }),
       response,
     );
   }
 
-  const { error: metadataError } = await supabase.auth.updateUser({
-    data: { persona },
+  // Update auth user_metadata via admin client (avoids session-state issues with SSR clients).
+  const { error: metadataError } = await supabaseAdmin.auth.admin.updateUserById(authUserId, {
+    user_metadata: { persona },
   });
 
   if (metadataError) {
+    console.error('[/api/me/persona] auth.admin.updateUserById error:', metadataError.message);
     return applySupabaseCookies(
       NextResponse.json({ error: metadataError.message }, { status: 400 }),
       response,

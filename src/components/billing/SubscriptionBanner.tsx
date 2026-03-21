@@ -1,23 +1,53 @@
 'use client';
 
-import { useState } from 'react';
-import { AlertTriangle, CreditCard, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { AlertTriangle, CreditCard, RefreshCw, X } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
+
+function formatDateLong(iso: string) {
+  return new Date(iso).toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric',
+  });
+}
 
 export function SubscriptionBanner() {
   const { subscriptionStatus, subscriptionDetails, activeRestaurantId, currentUser } =
     useAuthStore();
+
   const [dismissed, setDismissed] = useState(false);
+  const [cancelDismissed, setCancelDismissed] = useState(false);
   const [portalLoading, setPortalLoading] = useState(false);
 
-  // Only admins see billing banners
-  const role = currentUser?.role;
-  const isAdmin = role === 'ADMIN';
+  // Restore cancel-banner dismissal from sessionStorage (per restaurant, per session)
+  useEffect(() => {
+    if (typeof sessionStorage === 'undefined') return;
+    const key = `sf_cancel_banner_dismissed_${activeRestaurantId ?? 'global'}`;
+    if (sessionStorage.getItem(key) === '1') {
+      setCancelDismissed(true);
+    }
+  }, [activeRestaurantId]);
 
+  // Reset cancel dismissal when the active restaurant changes
+  useEffect(() => {
+    setCancelDismissed(false);
+  }, [activeRestaurantId]);
+
+  const dismissCancelBanner = () => {
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.setItem(
+        `sf_cancel_banner_dismissed_${activeRestaurantId ?? 'global'}`,
+        '1',
+      );
+    }
+    setCancelDismissed(true);
+  };
+
+  // Only admins/managers see billing banners
+  const isAdmin = currentUser?.role === 'ADMIN';
   if (!isAdmin) return null;
-  if (dismissed) return null;
-  if (subscriptionStatus !== 'past_due' && subscriptionStatus !== 'canceled') return null;
 
   const handleManageBilling = async () => {
     if (!activeRestaurantId) return;
@@ -33,7 +63,8 @@ export function SubscriptionBanner() {
     }
   };
 
-  if (subscriptionStatus === 'past_due') {
+  // ── Past due ──
+  if (subscriptionStatus === 'past_due' && !dismissed) {
     return (
       <div className="relative bg-amber-500/10 border-b border-amber-500/30 px-4 py-3">
         <div className="flex items-center justify-between gap-3 max-w-5xl mx-auto">
@@ -65,24 +96,17 @@ export function SubscriptionBanner() {
     );
   }
 
-  if (subscriptionStatus === 'canceled') {
+  // ── Hard canceled (fully ended) ──
+  if (subscriptionStatus === 'canceled' && !dismissed) {
     const periodEnd = subscriptionDetails?.currentPeriodEnd
-      ? new Date(subscriptionDetails.currentPeriodEnd).toLocaleDateString('en-US', {
-          month: 'long',
-          day: 'numeric',
-          year: 'numeric',
-        })
+      ? formatDateLong(subscriptionDetails.currentPeriodEnd)
       : null;
 
-    // Check if we're still within the paid period
     const stillWithinPeriod =
       subscriptionDetails?.currentPeriodEnd &&
       new Date(subscriptionDetails.currentPeriodEnd) > new Date();
 
-    if (!stillWithinPeriod) {
-      // Past period end — the gate should handle this, but return null here
-      return null;
-    }
+    if (!stillWithinPeriod) return null;
 
     return (
       <div className="relative bg-red-500/10 border-b border-red-500/30 px-4 py-3">
@@ -104,6 +128,49 @@ export function SubscriptionBanner() {
             <button
               onClick={() => setDismissed(true)}
               className="p-1 text-red-400/60 hover:text-red-400 transition-colors"
+              aria-label="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Active but scheduled to cancel (cancel_at_period_end = true) ──
+  if (
+    subscriptionStatus === 'active' &&
+    subscriptionDetails?.cancelAtPeriodEnd &&
+    !cancelDismissed
+  ) {
+    const periodEndIso = subscriptionDetails.currentPeriodEnd;
+    if (!periodEndIso || new Date(periodEndIso) <= new Date()) return null;
+
+    const periodEnd = formatDateLong(periodEndIso);
+
+    return (
+      <div className="relative bg-amber-500/10 border-b border-amber-500/30 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 max-w-5xl mx-auto">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <AlertTriangle className="w-4 h-4 text-amber-500 shrink-0" />
+            <p className="text-sm text-amber-500 min-w-0">
+              Your subscription is canceled and will end on{' '}
+              <span className="font-semibold whitespace-nowrap">{periodEnd}</span>.{' '}
+              <span className="hidden sm:inline">Reactivate now to continue scheduling.</span>
+            </p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <a
+              href="/billing"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 text-zinc-900 text-xs font-semibold hover:bg-amber-400 transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              Reactivate
+            </a>
+            <button
+              onClick={dismissCancelBanner}
+              className="p-1 text-amber-500/60 hover:text-amber-500 transition-colors"
               aria-label="Dismiss"
             >
               <X className="w-4 h-4" />

@@ -14,6 +14,7 @@ export const revalidate = 0;
 type FinalizeCheckoutPayload = {
   session_id?: string;
   intent_id?: string;
+  organization_id?: string;
 };
 
 function jsonNoStore(body: unknown, init?: ResponseInit) {
@@ -75,6 +76,7 @@ async function finalizeCheckout(
   request: NextRequest,
   sessionIdInput?: string | null,
   fallbackIntentId?: string | null,
+  overrideOrganizationId?: string | null,
 ) {
   const sessionId = String(sessionIdInput ?? '').trim();
   if (!sessionId) {
@@ -179,7 +181,27 @@ async function finalizeCheckout(
   }
 
   const intentId = pickIntentId(checkoutSession, subscription, fallbackIntentId);
-  const organizationId = pickOrganizationId(checkoutSession, subscription);
+  const resolvedOverrideOrgId = String(overrideOrganizationId ?? '').trim() || null;
+
+  // When an explicit organizationId override is provided (post-commit linking),
+  // verify the caller is an admin of that org before using it.
+  if (resolvedOverrideOrgId) {
+    const { data: membership } = await supabaseAdmin
+      .from('organization_memberships')
+      .select('role')
+      .eq('auth_user_id', authUserId)
+      .eq('organization_id', resolvedOverrideOrgId)
+      .maybeSingle();
+    const memberRole = String(membership?.role ?? '').trim().toLowerCase();
+    if (!membership || memberRole !== 'admin') {
+      return applySupabaseCookies(
+        jsonNoStore({ error: 'Only admins can link subscriptions to an organization.' }, { status: 403 }),
+        response,
+      );
+    }
+  }
+
+  const organizationId = resolvedOverrideOrgId || pickOrganizationId(checkoutSession, subscription);
   const currentPeriodEnd = toIsoFromUnixTimestamp(subscription.current_period_end);
   const quantity = subscription.items.data[0]?.quantity ?? 1;
   const latestInvoice =
@@ -206,7 +228,7 @@ async function finalizeCheckout(
     const billingMode = String(subscription.metadata?.billing_mode ?? '').trim() || 'legacy';
 
     if (orgStripeCustomerId) {
-      await supabaseAdmin
+      const { error: subUpsertError } = await supabaseAdmin
         .from('subscriptions')
         .upsert(
           {
@@ -225,6 +247,19 @@ async function finalizeCheckout(
           },
           { onConflict: 'organization_id' },
         );
+
+      if (subUpsertError) {
+        console.error('[billing:finalize] subscriptions upsert failed:', {
+          organizationId,
+          stripeSubscriptionId: subscription.id,
+          error: subUpsertError.message,
+          code: subUpsertError.code,
+        });
+        return applySupabaseCookies(
+          jsonNoStore({ error: 'Failed to link subscription to organization.' }, { status: 500 }),
+          response,
+        );
+      }
     }
   }
 
@@ -270,5 +305,5 @@ export async function POST(request: NextRequest) {
     return jsonNoStore({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
-  return finalizeCheckout(request, payload.session_id, payload.intent_id);
+  return finalizeCheckout(request, payload.session_id, payload.intent_id, payload.organization_id);
 }

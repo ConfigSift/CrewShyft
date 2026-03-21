@@ -621,6 +621,11 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       has_per_org_billing?: boolean;
       covered_org_count?: number;
       uncovered_org_count?: number;
+      org_subscriptions?: Array<{
+        cancel_at_period_end: boolean;
+        current_period_end: string | null;
+        status: string;
+      }>;
     }>(
       organizationId
         ? `/api/billing/subscription-status?organizationId=${organizationId}`
@@ -664,14 +669,21 @@ export const useAuthStore = create<AuthState>((set, get) => ({
             ? 'canceled'
             : 'none';
 
+    // Per-org subscriptions return subscription: null; fall back to org_subscriptions[0].
+    const orgSub0 = result.data.org_subscriptions?.[0] ?? null;
+    const effectiveCancelAtPeriodEnd =
+      subscription?.cancel_at_period_end ?? Boolean(orgSub0?.cancel_at_period_end);
+    const effectiveCurrentPeriodEnd =
+      subscription?.current_period_end ?? orgSub0?.current_period_end ?? null;
+
     const subscriptionDetails: SubscriptionDetails | null = subscription
       ? {
           planInterval: subscription.stripe_price_id
             ? resolvePlanInterval(subscription.stripe_price_id)
             : 'unknown',
           quantity: subscription.quantity,
-          currentPeriodEnd: subscription.current_period_end,
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
+          currentPeriodEnd: effectiveCurrentPeriodEnd,
+          cancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
           ownedOrgCount,
           requiredQuantity,
           overLimit,
@@ -680,8 +692,8 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       : {
           planInterval: 'unknown',
           quantity: 0,
-          currentPeriodEnd: null,
-          cancelAtPeriodEnd: false,
+          currentPeriodEnd: effectiveCurrentPeriodEnd,
+          cancelAtPeriodEnd: effectiveCancelAtPeriodEnd,
           ownedOrgCount,
           requiredQuantity,
           overLimit,

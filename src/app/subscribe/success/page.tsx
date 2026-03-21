@@ -212,24 +212,38 @@ export default function SubscribeSuccessPage() {
     return false;
   }
 
-  const commitIntentAndRedirect = useCallback(async (intentId: string) => {
+  const commitIntentAndRedirect = useCallback(async (intentId: string, sessionIdForLink?: string | null) => {
     const commitResult = await apiFetch<CommitIntentResponse | CommitIntentError>(
       '/api/orgs/commit-intent',
       {
         method: 'POST',
-        json: { intentId },
+        json: { intentId, deferBillingCheck: true },
       },
     );
 
     if (commitResult.ok && (commitResult.data as CommitIntentResponse | null)?.organizationId) {
       const organizationId = (commitResult.data as CommitIntentResponse).organizationId;
+
+      // Link the Stripe subscription to the newly created org so the subscriptions
+      // table gets populated. Non-fatal: webhook may sync it if this call fails.
+      if (sessionIdForLink) {
+        try {
+          await apiFetch('/api/billing/finalize-checkout', {
+            method: 'POST',
+            json: { session_id: sessionIdForLink, organization_id: organizationId },
+          });
+        } catch {
+          // Non-fatal — subscription will sync via Stripe webhook
+        }
+      }
+
       await refreshProfile();
       const matchedRestaurant = useAuthStore
         .getState()
         .accessibleRestaurants
         .find((restaurant) => restaurant.id === organizationId);
       setActiveOrganization(organizationId, matchedRestaurant?.restaurantCode ?? null);
-      router.replace('/restaurants?subscribed=true');
+      router.replace('/dashboard');
       return true;
     }
 
@@ -300,10 +314,10 @@ export default function SubscribeSuccessPage() {
 
       if (activeNow) {
         if (resolvedIntentId) {
-          await commitIntentAndRedirect(resolvedIntentId);
+          await commitIntentAndRedirect(resolvedIntentId, sessionId);
           return;
         }
-        router.replace('/restaurants?subscribed=true');
+        router.replace('/dashboard');
         return;
       }
 
@@ -312,17 +326,17 @@ export default function SubscribeSuccessPage() {
 
       if (becameActive) {
         if (resolvedIntentId) {
-          await commitIntentAndRedirect(resolvedIntentId);
+          await commitIntentAndRedirect(resolvedIntentId, sessionId);
           return;
         }
-        router.replace('/restaurants?subscribed=true');
+        router.replace('/dashboard');
         return;
       }
 
       setViewState('syncing');
       setErrorMessage('Your payment succeeded - subscription is syncing.');
       autoRedirectTimerRef.current = setTimeout(() => {
-        router.replace('/restaurants?subscribed=true');
+        router.replace('/dashboard');
       }, 3000);
     }
 
@@ -415,7 +429,7 @@ export default function SubscribeSuccessPage() {
                 Retry
               </button>
               <button
-                onClick={() => router.replace('/restaurants?subscribed=true')}
+                onClick={() => router.replace('/dashboard')}
                 className="w-full mt-3 py-3 border border-theme-primary text-theme-secondary rounded-lg hover:bg-theme-hover transition-colors"
               >
                 Continue to Site Manager
@@ -468,7 +482,7 @@ export default function SubscribeSuccessPage() {
                 {errorMessage ?? 'Your payment succeeded - subscription is syncing.'}
               </p>
               <button
-                onClick={() => router.replace('/restaurants?subscribed=true')}
+                onClick={() => router.replace('/dashboard')}
                 className="w-full py-3 bg-amber-500 text-zinc-900 font-semibold rounded-lg hover:bg-amber-400 transition-colors"
               >
                 Continue to Site Manager

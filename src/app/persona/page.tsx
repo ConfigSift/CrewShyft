@@ -5,12 +5,11 @@ import { useRouter } from 'next/navigation';
 import { Briefcase, Check, Users } from 'lucide-react';
 import { TransitionScreen } from '@/components/auth/TransitionScreen';
 import { apiFetch } from '@/lib/apiClient';
-import { AccountPersona, normalizePersona, persistPersona, readStoredPersona } from '@/lib/persona';
+import { AccountPersona, normalizePersona, persistPersona } from '@/lib/persona';
 import { resolvePostAuthDestination } from '@/lib/authRedirect';
 import { supabase } from '@/lib/supabase/client';
 import { useAuthStore } from '@/store/authStore';
 import { useUIStore } from '@/store/uiStore';
-import { getAppBase } from '@/lib/routing/getBaseUrls';
 
 function getPersonaCardClasses(isSelected: boolean) {
   return [
@@ -59,7 +58,7 @@ function PersonaContent() {
   }, [setUiLockedForOnboarding]);
 
   const existingPersona = useMemo(
-    () => normalizePersona(currentUser?.persona) ?? readStoredPersona(),
+    () => normalizePersona(currentUser?.persona),
     [currentUser?.persona],
   );
 
@@ -88,13 +87,17 @@ function PersonaContent() {
       method: 'POST',
       json: { persona: selectedPersona },
     });
-    void result;
+
+    if (!result.ok) {
+      setError('Failed to save your selection. Please try again.');
+      setSubmitting(false);
+      return;
+    }
 
     await refreshProfile();
-    const appBase = getAppBase(window.location.origin);
-    const destination = selectedPersona === 'manager' ? `${appBase}/setup` : `${appBase}/join`;
     setUiLockedForOnboarding(false);
-    window.location.assign(destination);
+    router.refresh();
+    router.push('/start');
   };
 
   if (!isInitialized || !isAuthResolved || !hasSession || existingPersona) {

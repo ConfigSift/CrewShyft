@@ -1,4 +1,4 @@
-export type PostAuthDestination = '/dashboard' | '/restaurants' | '/join';
+export type PostAuthDestination = '/dashboard' | '/start' | '/join';
 
 function normalizeRole(value: unknown): string {
   return String(value ?? '').trim().toLowerCase();
@@ -19,8 +19,8 @@ export function hasRestaurantManagerCapability(role: unknown, persona: unknown):
   );
 }
 
-export function resolveNoMembershipDestination(role: unknown, persona: unknown): '/restaurants' | '/join' {
-  return hasRestaurantManagerCapability(role, persona) ? '/restaurants' : '/join';
+export function resolveNoMembershipDestination(role: unknown, persona: unknown): '/start' | '/join' {
+  return hasRestaurantManagerCapability(role, persona) ? '/start' : '/join';
 }
 
 export function resolvePostAuthDestination(

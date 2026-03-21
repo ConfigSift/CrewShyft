@@ -20,23 +20,7 @@ import {
 
 type CreateIntentResponse = {
   intentId: string;
-  desiredQuantity: number;
-  ownedOrgCount: number;
   billingEnabled: boolean;
-  hasActiveSubscription: boolean;
-  needsUpgrade: boolean;
-};
-
-type UpgradeQuantityResponse = {
-  ok?: boolean;
-  bypass?: boolean;
-  upgraded?: boolean;
-  code?: string;
-  message?: string;
-  redirect?: string;
-  manageBillingUrl?: string;
-  hostedInvoiceUrl?: string;
-  error?: string;
 };
 
 type CommitIntentResponse = {
@@ -117,11 +101,7 @@ export default function RestaurantSelectPage() {
   const [manageError, setManageError] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
   const [intentId, setIntentId] = useState<string | null>(null);
-  const [intentDesiredQuantity, setIntentDesiredQuantity] = useState<number | null>(null);
-  const [createModalStep, setCreateModalStep] = useState<'hidden' | 'upgrade' | 'payment'>('hidden');
-  const [createFlowError, setCreateFlowError] = useState('');
-  const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
-  const [upgradeSubmitting, setUpgradeSubmitting] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ id: string; name: string; restaurantCode: string } | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
   const [deleteError, setDeleteError] = useState('');
@@ -309,21 +289,17 @@ export default function RestaurantSelectPage() {
 
   const clearIntentFlow = () => {
     setIntentId(null);
-    setIntentDesiredQuantity(null);
-    setCreateModalStep('hidden');
-    setCreateFlowError('');
-    setPaymentUrl(null);
-    setUpgradeSubmitting(false);
+    setCreateModalOpen(false);
   };
 
   const commitIntent = async (nextIntentId: string) => {
-    const result = await apiFetch<CommitIntentResponse | UpgradeQuantityResponse>('/api/orgs/commit-intent', {
+    const result = await apiFetch<CommitIntentResponse>('/api/orgs/commit-intent', {
       method: 'POST',
       json: { intentId: nextIntentId },
     });
 
-    if (result.ok && (result.data as CommitIntentResponse | null)?.organizationId) {
-      const organizationId = (result.data as CommitIntentResponse).organizationId;
+    if (result.ok && result.data?.organizationId) {
+      const { organizationId } = result.data;
       await refreshProfile();
       const matchedRestaurant = useAuthStore
         .getState()
@@ -336,60 +312,8 @@ export default function RestaurantSelectPage() {
       return true;
     }
 
-    const body = (result.data ?? null) as UpgradeQuantityResponse | null;
-    if (result.status === 409) {
-      if (body?.code === 'NO_ACTIVE_SUBSCRIPTION' && body.redirect) {
-        router.push(body.redirect);
-        return false;
-      }
-      setCreateFlowError(body?.message || 'Payment is required before this restaurant can be created.');
-      setCreateModalStep('payment');
-      setPaymentUrl(body?.hostedInvoiceUrl ?? body?.manageBillingUrl ?? body?.redirect ?? '/billing');
-      return false;
-    }
-
-    setCreateFlowError(body?.message || body?.error || result.error || 'Unable to create restaurant.');
+    setManageError(result.error || 'Unable to create restaurant.');
     return false;
-  };
-
-  const runUpgradeQuantity = async (nextIntentId: string) => {
-    setUpgradeSubmitting(true);
-    setCreateFlowError('');
-
-    const result = await apiFetch<UpgradeQuantityResponse>('/api/billing/upgrade-quantity', {
-      method: 'POST',
-      json: { intentId: nextIntentId },
-    });
-
-    if (!result.ok || !result.data) {
-      setCreateFlowError(result.error || 'Unable to update subscription quantity.');
-      setUpgradeSubmitting(false);
-      return;
-    }
-
-    if (result.data.ok && (result.data.upgraded || result.data.bypass)) {
-      const committed = await commitIntent(nextIntentId);
-      setUpgradeSubmitting(false);
-      if (committed) return;
-      return;
-    }
-
-    if (result.data.code === 'NO_SUBSCRIPTION') {
-      setUpgradeSubmitting(false);
-      router.push(result.data.redirect || `/subscribe?intent=${encodeURIComponent(nextIntentId)}`);
-      return;
-    }
-
-    if (result.data.code === 'PAYMENT_REQUIRED') {
-      setCreateModalStep('payment');
-      setPaymentUrl(result.data.hostedInvoiceUrl ?? result.data.manageBillingUrl ?? '/billing');
-      setCreateFlowError(result.data.message || 'Complete payment, then return and continue.');
-      setUpgradeSubmitting(false);
-      return;
-    }
-
-    setCreateFlowError(result.data.message || result.data.error || 'Unable to update subscription quantity.');
-    setUpgradeSubmitting(false);
   };
 
   const handleCancelPendingIntent = async () => {
@@ -404,6 +328,51 @@ export default function RestaurantSelectPage() {
     clearIntentFlow();
   };
 
+  // Billing-enabled path: commit the org immediately (deferred billing check),
+  // activate it, save to onboarding session, then send the user to the
+  // embedded checkout in the setup wizard (Step 3).
+  const handleCommitAndSetup = async () => {
+    if (!intentId) return;
+    setCreateSubmitting(true);
+    setManageError('');
+    try {
+      const commitResult = await apiFetch<CommitIntentResponse>('/api/orgs/commit-intent', {
+        method: 'POST',
+        json: { intentId, deferBillingCheck: true },
+      });
+
+      if (!commitResult.ok || !commitResult.data?.organizationId) {
+        setManageError(commitResult.error || 'Unable to create restaurant. Try again.');
+        return;
+      }
+
+      const { organizationId, restaurantCode } = commitResult.data;
+
+      await refreshProfile();
+      const matched = useAuthStore
+        .getState()
+        .accessibleRestaurants
+        .find((r) => r.id === organizationId);
+      setActiveOrganization(organizationId, matched?.restaurantCode ?? restaurantCode ?? null);
+
+      // Persist to the shared onboarding session key so OnboardingStepper
+      // Step 3 can resolve organizationId without the user going through Step 1.
+      try {
+        const existing = JSON.parse(sessionStorage.getItem('crewshyft_onboarding') || '{}') as Record<string, unknown>;
+        sessionStorage.setItem('crewshyft_onboarding', JSON.stringify({
+          ...existing,
+          organizationId,
+          restaurantCode: restaurantCode ?? undefined,
+        }));
+      } catch { /* ignore */ }
+
+      clearIntentFlow();
+      router.push('/setup?step=3');
+    } finally {
+      setCreateSubmitting(false);
+    }
+  };
+
   const handleCreateRestaurant = async () => {
     setManageError('');
     const name = newRestaurantName.trim();
@@ -413,7 +382,6 @@ export default function RestaurantSelectPage() {
     }
 
     setCreateSubmitting(true);
-    setCreateFlowError('');
 
     const createIntentResult = await apiFetch<CreateIntentResponse>('/api/orgs/create-intent', {
       method: 'POST',
@@ -428,7 +396,6 @@ export default function RestaurantSelectPage() {
 
     const nextIntentId = createIntentResult.data.intentId;
     setIntentId(nextIntentId);
-    setIntentDesiredQuantity(createIntentResult.data.desiredQuantity);
 
     if (!createIntentResult.data.billingEnabled) {
       await commitIntent(nextIntentId);
@@ -436,19 +403,7 @@ export default function RestaurantSelectPage() {
       return;
     }
 
-    if (!createIntentResult.data.hasActiveSubscription) {
-      setCreateSubmitting(false);
-      router.push(`/subscribe?intent=${encodeURIComponent(nextIntentId)}`);
-      return;
-    }
-
-    if (createIntentResult.data.needsUpgrade) {
-      setCreateModalStep('upgrade');
-      setCreateSubmitting(false);
-      return;
-    }
-
-    await commitIntent(nextIntentId);
+    setCreateModalOpen(true);
     setCreateSubmitting(false);
   };
 
@@ -926,96 +881,34 @@ export default function RestaurantSelectPage() {
       </div>
 
       <Modal
-        isOpen={createModalStep !== 'hidden'}
-        onClose={() => {
-          if (upgradeSubmitting) return;
-          void handleCancelPendingIntent();
-        }}
-        title="Create Restaurant"
+        isOpen={createModalOpen}
+        onClose={() => void handleCancelPendingIntent()}
+        title="Create New Restaurant"
         size="md"
       >
         <div className="space-y-4">
-          {createModalStep === 'upgrade' && (
-            <>
-              <p className="text-sm text-theme-secondary">
-                Creating this restaurant requires upgrading your subscription to{' '}
-                <span className="font-semibold text-amber-400">
-                  {intentDesiredQuantity ?? 'the required'}
-                </span>{' '}
-                locations.
-              </p>
-              <p className="text-xs text-theme-muted">
-                We will only create the restaurant after billing confirms the quantity update.
-              </p>
-            </>
-          )}
-
-          {createModalStep === 'payment' && (
-            <>
-              <p className="text-sm text-theme-secondary">
-                {createFlowError || 'Payment is required before this restaurant can be created.'}
-              </p>
-              <p className="text-xs text-theme-muted">
-                Complete payment, then return and click &quot;I&apos;ve completed payment&quot;.
-              </p>
-            </>
-          )}
-
-          {createFlowError && createModalStep === 'upgrade' && (
-            <p className="text-xs text-red-400">{createFlowError}</p>
-          )}
+          <p className="text-sm text-theme-secondary">
+            Each restaurant has its own subscription. You&apos;ll choose a plan and complete billing in the next step.
+          </p>
 
           <div className="flex items-center justify-end gap-2">
             <button
               type="button"
-              onClick={() => {
-                void handleCancelPendingIntent();
-              }}
-              disabled={upgradeSubmitting}
+              onClick={() => void handleCancelPendingIntent()}
+              disabled={createSubmitting}
               className="px-4 py-2 rounded-lg bg-theme-tertiary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
             >
-              Cancel pending creation
+              Cancel
             </button>
-
-            {createModalStep === 'upgrade' && (
-              <button
-                type="button"
-                onClick={() => {
-                  if (!intentId) return;
-                  void runUpgradeQuantity(intentId);
-                }}
-                disabled={upgradeSubmitting}
-                className="px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
-              >
-                {upgradeSubmitting ? 'Processing...' : 'Continue to payment'}
-              </button>
-            )}
-
-            {createModalStep === 'payment' && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!paymentUrl) return;
-                    window.open(paymentUrl, '_blank');
-                  }}
-                  className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors"
-                >
-                  Open billing
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!intentId) return;
-                    void runUpgradeQuantity(intentId);
-                  }}
-                  disabled={upgradeSubmitting}
-                  className="px-4 py-2 rounded-lg border border-theme-primary text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
-                >
-                  {upgradeSubmitting ? 'Checking...' : "I've completed payment"}
-                </button>
-              </>
-            )}
+            <button
+              type="button"
+              onClick={() => void handleCommitAndSetup()}
+              disabled={createSubmitting}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-500 text-zinc-900 font-semibold hover:bg-amber-400 transition-colors disabled:opacity-50"
+            >
+              {createSubmitting && <Loader2 className="w-4 h-4 animate-spin" />}
+              {createSubmitting ? 'Setting up...' : 'Continue to billing'}
+            </button>
           </div>
         </div>
       </Modal>
@@ -1027,13 +920,13 @@ export default function RestaurantSelectPage() {
         size="md"
       >
         <div className="space-y-4">
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3">
-            <p className="text-sm text-red-300">
+          <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-500/40 dark:bg-red-500/10 p-3">
+            <p className="text-sm text-red-800 dark:text-red-300">
               Deleting removes schedules/staff/data and ends access immediately. Cannot be undone.
             </p>
           </div>
-          <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
-            <p className="text-sm text-amber-200">
+          <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-500/30 dark:bg-amber-500/10 p-3">
+            <p className="text-sm text-amber-800 dark:text-amber-200">
               This will reduce your billed locations from {Math.max(0, billedQuantity)} to {nextOwnedCountAfterDelete}.
             </p>
           </div>
@@ -1050,10 +943,10 @@ export default function RestaurantSelectPage() {
             />
           </div>
           {deleteError && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-1">
-              <p className="text-xs text-red-300">{deleteError}</p>
+            <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-500/40 dark:bg-red-500/10 p-3 space-y-1">
+              <p className="text-xs text-red-800 dark:text-red-300">{deleteError}</p>
               {(deleteErrorDetails?.table || deleteErrorDetails?.code || deleteErrorDetails?.details || deleteErrorDetails?.hint) && (
-                <div className="space-y-1 text-xs text-red-200/90">
+                <div className="space-y-1 text-xs text-red-700 dark:text-red-200/90">
                   {deleteErrorDetails?.table && <p>Table: <span className="font-mono">{deleteErrorDetails.table}</span></p>}
                   {deleteErrorDetails?.code && <p>Code: <span className="font-mono">{deleteErrorDetails.code}</span></p>}
                   {deleteErrorDetails?.details && <p>Details: {deleteErrorDetails.details}</p>}
@@ -1096,20 +989,20 @@ export default function RestaurantSelectPage() {
         size="md"
       >
         <div className="space-y-4">
-          <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3">
-            <p className="text-sm text-red-300">
+          <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-500/40 dark:bg-red-500/10 p-3">
+            <p className="text-sm text-red-800 dark:text-red-300">
               This permanently deletes your auth account and remaining billing data. This cannot be undone.
             </p>
           </div>
           {ownedOrgCount > 0 ? (
-            <p className="text-sm text-amber-300">
+            <p className="text-sm text-amber-700 dark:text-amber-300">
               Delete all restaurants first. {ownedOrgCount} remaining.
             </p>
           ) : accountDeleteDisabledReason ? (
-            <p className="text-sm text-amber-300">{accountDeleteDisabledReason}</p>
+            <p className="text-sm text-amber-700 dark:text-amber-300">{accountDeleteDisabledReason}</p>
           ) : billingLikelyBlocksAccountDelete ? (
             <div className="space-y-2">
-              <p className="text-sm text-amber-300">
+              <p className="text-sm text-amber-700 dark:text-amber-300">
                 Billing may block deletion while subscription status is {billingStatus || 'active'}.
               </p>
               <button
@@ -1141,10 +1034,10 @@ export default function RestaurantSelectPage() {
           </div>
 
           {accountDeleteError && (
-            <div className="rounded-lg border border-red-500/40 bg-red-500/10 p-3 space-y-2">
-              <p className="text-xs text-red-300">{accountDeleteError}</p>
+            <div className="rounded-lg border border-red-200 bg-red-50 dark:border-red-500/40 dark:bg-red-500/10 p-3 space-y-2">
+              <p className="text-xs text-red-800 dark:text-red-300">{accountDeleteError}</p>
               {(accountDeleteErrorDetails?.table || accountDeleteErrorDetails?.code || accountDeleteErrorDetails?.details || accountDeleteErrorDetails?.hint) && (
-                <div className="space-y-1 text-xs text-red-200/90">
+                <div className="space-y-1 text-xs text-red-700 dark:text-red-200/90">
                   {accountDeleteErrorDetails?.table && <p>Table: <span className="font-mono">{accountDeleteErrorDetails.table}</span></p>}
                   {accountDeleteErrorDetails?.code && <p>Code: <span className="font-mono">{accountDeleteErrorDetails.code}</span></p>}
                   {accountDeleteErrorDetails?.details && <p>Details: {accountDeleteErrorDetails.details}</p>}

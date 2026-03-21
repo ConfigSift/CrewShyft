@@ -15,13 +15,13 @@ import {
   Plus,
   Receipt,
   Settings,
-  Store,
   X,
   XCircle,
 } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 import { apiFetch } from '../../lib/apiClient';
 import type { InvoiceSummary } from '../api/billing/invoices/route';
+import { Modal } from '../../components/Modal';
 
 const BILLING_ENABLED = process.env.NEXT_PUBLIC_BILLING_ENABLED === 'true';
 const BILLING_PORTAL_ERROR_MESSAGE =
@@ -192,11 +192,19 @@ function InvoiceStatusChip({ status }: { status: string | null }) {
 function RestaurantBillingCard({
   sub,
   onManage,
+  onCancel,
+  onReactivate,
   portalLoading,
+  cancelLoading,
+  reactivateLoading,
 }: {
   sub: OrgSubscriptionSummary;
   onManage: () => void;
+  onCancel: () => void;
+  onReactivate: () => void;
   portalLoading: boolean;
+  cancelLoading: boolean;
+  reactivateLoading: boolean;
 }) {
   const interval = resolvePlanInterval(sub.stripe_price_id);
   const pricePerUnit = interval === 'annual' ? 199 : 19.99;
@@ -210,9 +218,6 @@ function RestaurantBillingCard({
         {/* Restaurant name + status */}
         <div className="flex items-center justify-between gap-3 mb-4">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-amber-500/10 flex items-center justify-center shrink-0">
-              <Store className="w-4 h-4 text-amber-500" />
-            </div>
             <div className="min-w-0">
               <p className="text-sm font-bold text-theme-primary leading-tight truncate">
                 {sub.organization_name}
@@ -245,7 +250,7 @@ function RestaurantBillingCard({
           </div>
         </div>
 
-        {/* Period end + manage */}
+        {/* Period end + actions */}
         <div className="flex items-center justify-between mt-3">
           {periodEnd && (
             <p className="text-[11px] text-theme-muted">
@@ -254,13 +259,34 @@ function RestaurantBillingCard({
                 : `Next invoice ${periodEnd}`}
             </p>
           )}
-          <button
-            onClick={onManage}
-            disabled={portalLoading}
-            className="text-[11px] text-amber-500 hover:text-amber-400 font-medium transition-colors disabled:opacity-50 ml-auto"
-          >
-            {portalLoading ? 'Opening...' : 'Manage'}
-          </button>
+          <div className="flex items-center gap-3 ml-auto">
+            {sub.cancel_at_period_end ? (
+              <button
+                onClick={onReactivate}
+                disabled={reactivateLoading || portalLoading}
+                className="text-[11px] text-amber-500 hover:text-amber-400 font-medium transition-colors disabled:opacity-50"
+              >
+                {reactivateLoading ? 'Reactivating...' : 'Reactivate'}
+              </button>
+            ) : (
+              isActiveStatus(sub.status) && (
+                <button
+                  onClick={onCancel}
+                  disabled={cancelLoading || portalLoading}
+                  className="text-[11px] text-zinc-500 hover:text-zinc-300 transition-colors disabled:opacity-50"
+                >
+                  {cancelLoading ? 'Canceling...' : 'Cancel subscription'}
+                </button>
+              )
+            )}
+            <button
+              onClick={onManage}
+              disabled={portalLoading}
+              className="text-[11px] text-amber-500 hover:text-amber-400 font-medium transition-colors disabled:opacity-50"
+            >
+              {portalLoading ? 'Opening...' : 'Manage'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -281,9 +307,6 @@ function UncoveredOrgCard({
       <div className="px-5 py-5 sm:px-6">
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-2.5 min-w-0">
-            <div className="w-8 h-8 rounded-lg bg-zinc-500/10 flex items-center justify-center shrink-0">
-              <Store className="w-4 h-4 text-zinc-400" />
-            </div>
             <div className="min-w-0">
               <p className="text-sm font-bold text-theme-primary leading-tight truncate">
                 {org.organization_name}
@@ -517,6 +540,71 @@ function ReceiptModal({
 }
 
 /* ------------------------------------------------------------------ */
+/*  Cancel Subscription Modal                                         */
+/* ------------------------------------------------------------------ */
+
+function CancelSubscriptionModal({
+  sub,
+  onConfirm,
+  onClose,
+  loading,
+}: {
+  sub: OrgSubscriptionSummary;
+  onConfirm: () => void;
+  onClose: () => void;
+  loading: boolean;
+}) {
+  const periodEnd = sub.current_period_end ? formatDateLong(sub.current_period_end) : null;
+
+  return (
+    <Modal isOpen onClose={loading ? () => {} : onClose} title="Cancel subscription?" size="sm" mobileFullScreen={false}>
+      <div className="space-y-4">
+        <p className="text-sm text-theme-secondary">
+          Your subscription will remain active until{' '}
+          {periodEnd ? (
+            <span className="font-semibold text-theme-primary">{periodEnd}</span>
+          ) : (
+            'the end of the current billing period'
+          )}
+          . After that, you&apos;ll lose access to scheduling features.
+        </p>
+
+        <div className="rounded-xl bg-red-500/8 border border-red-500/20 px-3 py-2.5">
+          <p className="text-xs text-red-400">
+            This only affects{' '}
+            <span className="font-semibold">{sub.organization_name}</span>.
+          </p>
+        </div>
+
+        <div className="flex gap-3 pt-1">
+          <button
+            onClick={onClose}
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl border border-theme-primary text-sm font-medium text-theme-secondary hover:bg-theme-hover transition-colors disabled:opacity-50"
+          >
+            Keep subscription
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading}
+            className="flex-1 py-2.5 rounded-xl bg-red-500 text-white text-sm font-semibold hover:bg-red-600 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Canceling...
+              </>
+            ) : (
+              'Cancel subscription'
+            )}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main Billing Client                                               */
 /* ------------------------------------------------------------------ */
 
@@ -531,6 +619,7 @@ export default function BillingClient() {
     init,
     subscriptionStatus,
     subscriptionDetails,
+    fetchSubscriptionStatus,
   } = useAuthStore();
 
   const [snapshotLoading, setSnapshotLoading] = useState(false);
@@ -539,8 +628,10 @@ export default function BillingClient() {
   const [fixingBillingLink, setFixingBillingLink] = useState(false);
   const [error, setError] = useState('');
 
+  const [snapshotError, setSnapshotError] = useState<string | null>(null);
   const [invoices, setInvoices] = useState<InvoiceSummary[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
+  const [invoiceError, setInvoiceError] = useState<string | null>(null);
   const [selectedInvoice, setSelectedInvoice] = useState<InvoiceSummary | null>(null);
 
   const reconcileAttemptedRef = useRef(false);
@@ -556,7 +647,10 @@ export default function BillingClient() {
   const loadSubscriptionSnapshot = useCallback(
     async (options?: { silent?: boolean }) => {
       const silent = options?.silent === true;
-      if (!silent) setSnapshotLoading(true);
+      if (!silent) {
+        setSnapshotLoading(true);
+        setSnapshotError(null);
+      }
 
       const result = await apiFetch<SubscriptionStatusSnapshot>(
         activeRestaurantId
@@ -567,8 +661,15 @@ export default function BillingClient() {
 
       if (result.ok && result.data) {
         setStatusSnapshot(result.data);
+        if (!silent) setSnapshotError(null);
       } else if (!silent) {
-        setStatusSnapshot(null);
+        // Keep any existing snapshot data — don't blank the UI on a transient error.
+        // Only set the error if we have no snapshot at all.
+        setSnapshotError(
+          typeof result.error === 'string' && result.error
+            ? result.error
+            : 'Unable to load subscription details.',
+        );
       }
 
       if (!silent) setSnapshotLoading(false);
@@ -579,14 +680,18 @@ export default function BillingClient() {
 
   const loadInvoices = useCallback(async () => {
     setInvoicesLoading(true);
-    const result = await apiFetch<{ invoices: InvoiceSummary[] }>('/api/billing/invoices', {
-      cache: 'no-store',
-    });
+    setInvoiceError(null);
+    const url = activeRestaurantId
+      ? `/api/billing/invoices?organizationId=${activeRestaurantId}`
+      : '/api/billing/invoices';
+    const result = await apiFetch<{ invoices: InvoiceSummary[] }>(url, { cache: 'no-store' });
     if (result.ok && result.data?.invoices) {
       setInvoices(result.data.invoices);
+    } else if (!result.ok) {
+      setInvoiceError('Unable to load invoices. Please refresh the page.');
     }
     setInvoicesLoading(false);
-  }, []);
+  }, [activeRestaurantId]);
 
   const refreshSnapshotAndRouter = useCallback(async () => {
     const snapshot = await loadSubscriptionSnapshot();
@@ -660,6 +765,9 @@ export default function BillingClient() {
   }, [snapshotOwnedCount, snapshotQuantity, loadSubscriptionSnapshot, router]);
 
   const [subscribingOrgId, setSubscribingOrgId] = useState<string | null>(null);
+  const [cancelModalSub, setCancelModalSub] = useState<OrgSubscriptionSummary | null>(null);
+  const [cancelLoading, setCancelLoading] = useState(false);
+  const [reactivateLoadingOrgId, setReactivateLoadingOrgId] = useState<string | null>(null);
 
   /* ---- handlers ---- */
 
@@ -691,10 +799,57 @@ export default function BillingClient() {
         setPortalLoading(false);
         return;
       }
+      // Surface the actual retry error if it's more specific than the generic message
+      const retryMsg = typeof retry.error === 'string' && retry.error ? retry.error : null;
+      setError(retryMsg || BILLING_PORTAL_ERROR_MESSAGE);
+      setPortalLoading(false);
+      return;
     }
 
-    setError(BILLING_PORTAL_ERROR_MESSAGE);
+    // Surface the actual API/Stripe error so developers can diagnose issues
+    // (e.g. "No customer portal configuration exists in Stripe dashboard").
+    const firstMsg = typeof first.error === 'string' && first.error ? first.error : null;
+    setError(firstMsg || BILLING_PORTAL_ERROR_MESSAGE);
     setPortalLoading(false);
+  };
+
+  const handleCancelSubscription = async () => {
+    if (!cancelModalSub) return;
+    setCancelLoading(true);
+    const result = await apiFetch('/api/billing/cancel-subscription', {
+      method: 'POST',
+      json: { organizationId: cancelModalSub.organization_id },
+    });
+    setCancelLoading(false);
+    if (result.ok) {
+      setCancelModalSub(null);
+      // Refresh both local snapshot (card UI) and authStore (banner in AppShell).
+      await Promise.all([
+        loadSubscriptionSnapshot({ silent: true }),
+        fetchSubscriptionStatus(activeRestaurantId),
+      ]);
+    } else {
+      setError((result.error as string | undefined) || 'Unable to cancel subscription.');
+    }
+  };
+
+  const handleReactivateSubscription = async (organizationId: string) => {
+    setError('');
+    setReactivateLoadingOrgId(organizationId);
+    const result = await apiFetch('/api/billing/reactivate-subscription', {
+      method: 'POST',
+      json: { organizationId },
+    });
+    setReactivateLoadingOrgId(null);
+    if (result.ok) {
+      // Refresh both local snapshot (card UI) and authStore (banner in AppShell).
+      await Promise.all([
+        loadSubscriptionSnapshot({ silent: true }),
+        fetchSubscriptionStatus(activeRestaurantId),
+      ]);
+    } else {
+      setError((result.error as string | undefined) || 'Unable to reactivate subscription.');
+    }
   };
 
   const handleSubscribeOrg = async (organizationId: string) => {
@@ -775,6 +930,15 @@ export default function BillingClient() {
         <ReceiptModal invoice={selectedInvoice} onClose={() => setSelectedInvoice(null)} />
       )}
 
+      {cancelModalSub && (
+        <CancelSubscriptionModal
+          sub={cancelModalSub}
+          onConfirm={handleCancelSubscription}
+          onClose={() => setCancelModalSub(null)}
+          loading={cancelLoading}
+        />
+      )}
+
       <div className="max-w-xl mx-auto px-4 sm:px-6 py-8 sm:py-12 space-y-5">
         {/* Page header */}
         <div className="flex items-center justify-between">
@@ -823,6 +987,15 @@ export default function BillingClient() {
           </div>
         )}
 
+        {snapshotError && !statusSnapshot && (
+          <div className="rounded-xl bg-red-500/8 border border-red-500/20 px-4 py-3">
+            <p className="text-sm text-red-400">{snapshotError}</p>
+            <p className="text-xs text-red-400/70 mt-0.5">
+              Refresh the page to try again.
+            </p>
+          </div>
+        )}
+
         {/* ---- Per-restaurant billing cards ---- */}
         {hasPerOrgData ? (
           <>
@@ -830,12 +1003,8 @@ export default function BillingClient() {
             <div className="flex items-center gap-2">
               <Crown className="w-4 h-4 text-amber-500" />
               <p className="text-xs font-semibold text-theme-secondary uppercase tracking-wider">
-                Restaurant Subscriptions
+                Subscription
               </p>
-              <span className="text-[11px] text-theme-muted tabular-nums ml-auto">
-                {orgSubs.filter((s) => isActiveStatus(s.status)).length} of{' '}
-                {orgSubs.length + uncoveredOrgs.length} active
-              </span>
             </div>
 
             {/* Active/managed org subscription cards */}
@@ -844,7 +1013,11 @@ export default function BillingClient() {
                 key={sub.organization_id}
                 sub={sub}
                 onManage={handleManageBilling}
+                onCancel={() => setCancelModalSub(sub)}
+                onReactivate={() => handleReactivateSubscription(sub.organization_id)}
                 portalLoading={portalLoading}
+                cancelLoading={cancelLoading && cancelModalSub?.organization_id === sub.organization_id}
+                reactivateLoading={reactivateLoadingOrgId === sub.organization_id}
               />
             ))}
 
@@ -938,6 +1111,11 @@ export default function BillingClient() {
           {invoicesLoading ? (
             <div className="flex items-center justify-center py-10">
               <Loader2 className="w-5 h-5 text-theme-tertiary animate-spin" />
+            </div>
+          ) : invoiceError ? (
+            <div className="px-5 py-10 text-center">
+              <FileText className="w-6 h-6 text-theme-tertiary mx-auto mb-2 opacity-30" />
+              <p className="text-xs text-red-400">{invoiceError}</p>
             </div>
           ) : invoices.length === 0 ? (
             <div className="px-5 py-10 text-center">
