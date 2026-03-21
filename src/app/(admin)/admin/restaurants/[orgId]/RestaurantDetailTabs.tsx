@@ -560,9 +560,6 @@ function SubscriptionTab({ orgId }: { orgId: string }) {
   const [overrideExpiresAt, setOverrideExpiresAt] = useState('');
   const [overrideSubmitting, setOverrideSubmitting] = useState(false);
   const [overrideError, setOverrideError] = useState<string | null>(null);
-  if (loading) return <TabSpinner />;
-  if (error) return <AdminFetchError message="Failed to load subscription" detail={error} onRetry={retry} />;
-
   const sub = data?.subscription;
   const billing = data?.billingAccount;
   const billingOverride = data?.billingOverride ?? null;
@@ -578,6 +575,9 @@ function SubscriptionTab({ orgId }: { orgId: string }) {
     setOverrideReason(billingOverride.reason ?? '');
     setOverrideExpiresAt(toDateTimeLocalValue(billingOverride.expiresAt));
   }, [billingOverride]);
+
+  if (loading) return <TabSpinner />;
+  if (error) return <AdminFetchError message="Failed to load subscription" detail={error} onRetry={retry} />;
 
   const saveOverride = async () => {
     setOverrideSubmitting(true);

@@ -123,11 +123,8 @@ function buildOrgCoverageSummary(params: {
       quantity: 0,
       current_period_end: subscription?.current_period_end ?? null,
       cancel_at_period_end: Boolean(subscription?.cancel_at_period_end),
-      billing_mode: 'override',
-      billing_source: 'override',
-      billing_override_type: overrideType,
-      billing_override_reason: billingOverride?.billing_override_reason ?? null,
-      billing_override_expires_at: billingOverride?.billing_override_expires_at ?? null,
+      billing_mode: subscription?.billing_mode ?? 'managed',
+      billing_management_mode: 'platform',
     };
   }
 
@@ -143,10 +140,7 @@ function buildOrgCoverageSummary(params: {
     current_period_end: subscription.current_period_end,
     cancel_at_period_end: subscription.cancel_at_period_end,
     billing_mode: subscription.billing_mode,
-    billing_source: 'stripe',
-    billing_override_type: null,
-    billing_override_reason: null,
-    billing_override_expires_at: null,
+    billing_management_mode: 'customer',
   };
 }
 

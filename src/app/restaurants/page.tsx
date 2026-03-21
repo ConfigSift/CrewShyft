@@ -51,10 +51,7 @@ type OrgSubscriptionEntry = {
   status: string;
   cancel_at_period_end: boolean;
   current_period_end: string | null;
-  billing_source?: 'stripe' | 'override' | string;
-  billing_override_type?: string | null;
-  billing_override_reason?: string | null;
-  billing_override_expires_at?: string | null;
+  billing_management_mode?: 'platform' | 'customer' | string;
 };
 
 type SubscriptionSnapshot = {
@@ -279,8 +276,8 @@ export default function RestaurantSelectPage() {
     return isResumableRestaurantFromSnapshot(restaurant, billingSnapshot);
   }, [billingSnapshot, isResumableRestaurantFromSnapshot]);
 
-  const isBillingOverrideEntry = useCallback((entry: OrgSubscriptionEntry | null | undefined) => {
-    return Boolean(String(entry?.billing_override_type ?? '').trim());
+  const isPlatformManagedBilling = useCallback((entry: OrgSubscriptionEntry | null | undefined) => {
+    return String(entry?.billing_management_mode ?? '').trim().toLowerCase() === 'platform';
   }, []);
 
   useEffect(() => {
@@ -861,7 +858,7 @@ export default function RestaurantSelectPage() {
               (s) => s.organization_id === deleteTarget?.id,
             );
             const isActive = orgSub
-              && !isBillingOverrideEntry(orgSub)
+              && !isPlatformManagedBilling(orgSub)
               && (orgSub.status === 'active' || orgSub.status === 'trialing');
             if (!isActive) return null;
             return (

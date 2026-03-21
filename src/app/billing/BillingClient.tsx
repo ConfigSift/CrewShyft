@@ -37,10 +37,7 @@ type OrgSubscriptionSummary = {
   current_period_end: string | null;
   cancel_at_period_end: boolean;
   billing_mode: string;
-  billing_source?: 'stripe' | 'override' | string;
-  billing_override_type?: string | null;
-  billing_override_reason?: string | null;
-  billing_override_expires_at?: string | null;
+  billing_management_mode?: 'platform' | 'customer' | string;
 };
 
 type UncoveredOrg = {
@@ -129,10 +126,10 @@ function isActiveStatus(status: string) {
   return status === 'active' || status === 'trialing';
 }
 
-function hasBillingOverride(summary: {
-  billing_override_type?: string | null;
+function isPlatformManagedBilling(summary: {
+  billing_management_mode?: string | null;
 }) {
-  return Boolean(String(summary.billing_override_type ?? '').trim());
+  return String(summary.billing_management_mode ?? '').trim().toLowerCase() === 'platform';
 }
 
 /* ------------------------------------------------------------------ */
@@ -224,8 +221,7 @@ function RestaurantBillingCard({
   const pricePerUnit = interval === 'annual' ? 199 : 19.99;
   const intervalLabel = interval === 'annual' ? '/yr' : '/mo';
   const planLabel = interval === 'annual' ? 'Annual' : interval === 'monthly' ? 'Monthly' : 'Pro';
-  const isOverride = hasBillingOverride(sub);
-  const overrideExpiry = sub.billing_override_expires_at ? formatDateLong(sub.billing_override_expires_at) : null;
+  const isOverride = isPlatformManagedBilling(sub);
   const stripePeriodEnd = sub.current_period_end ? formatDateLong(sub.current_period_end) : null;
 
   return (
